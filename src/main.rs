@@ -1,5 +1,5 @@
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,26 +35,27 @@ impl std::io::Read for UploadHelper {
             buf[i] = 1;
         }
 
-        self.byte_ctr.fetch_add(buf.len() as u64, Ordering::SeqCst);
+        self.byte_ctr.fetch_add(buf.len() as usize, Ordering::SeqCst);
         self.total_uploaded_counter
-            .fetch_add(buf.len() as u64, Ordering::SeqCst);
+            .fetch_add(buf.len() as usize, Ordering::SeqCst);
         Ok(buf.len())
     }
 }
 
 struct UploadHelper {
-    bytes_to_send: u64,
-    byte_ctr: Arc<AtomicU64>,
-    total_uploaded_counter: Arc<AtomicU64>,
+    bytes_to_send: usize,
+    byte_ctr: Arc<AtomicUsize>,
+    total_uploaded_counter: Arc<AtomicUsize>,
     exit_signal: Arc<AtomicBool>,
 }
 
-fn get_secs_since_unix_epoch() -> u64 {
+fn get_secs_since_unix_epoch() -> usize {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
 
-    since_the_epoch.as_secs()
+	since_the_epoch.as_secs() as usize
 }
+
 // Given n bytes, return
 // 	a: unit of measurement in sensible form of bytes
 // 	b: unit of measurement in sensible form of bits
@@ -63,7 +64,7 @@ fn get_secs_since_unix_epoch() -> u64 {
 // basically, the BYTE value should always be greater than 1
 // and never more than 1024. the bit value should just be calculated off
 // the byte value
-fn get_appropriate_byte_unit(bytes: u64) -> Result<(String, String)> {
+fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
     let mut bytes = bytes as f64;
     let byte_unit: char;
     let bit_unit: char;
@@ -178,15 +179,15 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
 
 // send cloudflare some bytes
 fn upload_test(
-    bytes: u64,
-    total_up_bytes_counter: &Arc<AtomicU64>,
+    bytes: usize,
+    total_up_bytes_counter: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let agent = Agent::new();
 
     let upload_helper = UploadHelper {
         bytes_to_send: bytes,
-        byte_ctr: Arc::new(AtomicU64::new(0)),
+        byte_ctr: Arc::new(AtomicUsize::new(0)),
         total_uploaded_counter: total_up_bytes_counter.clone(),
         exit_signal: exit_signal.clone(),
     };
@@ -206,9 +207,9 @@ fn upload_test(
 
 // download some bytes from cloudflare
 fn download_test(
-    bytes: u64,
-    total_bytes_counter: &Arc<AtomicU64>,
-    current_down_speed: &Arc<AtomicU64>,
+    bytes: usize,
+    total_bytes_counter: &Arc<AtomicUsize>,
+    current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     // not using an agent because we want each thread
@@ -219,7 +220,7 @@ fn download_test(
         .expect("Couldn't create download request");
 
     let mut resp_reader = resp.into_reader();
-    let mut total_bytes_sank = 0;
+    let mut total_bytes_sank : usize = 0;
 
     loop {
         // exit if we have passed deadline
@@ -243,7 +244,7 @@ fn download_test(
         let bytes_sank = std::io::copy(
             &mut resp_reader.by_ref().take(current_recv_buff),
             &mut std::io::sink(),
-        )?;
+        )? as usize;
 
         if bytes_sank == 0 {
             if total_bytes_sank == 0 {
@@ -301,13 +302,13 @@ fn main() {
 
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
 
-    let total_downloaded_bytes_counter = Arc::new(AtomicU64::new(0));
-    let total_uploaded_bytes_counter = Arc::new(AtomicU64::new(0));
+    let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+    let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
 
-    let current_down_speed = Arc::new(AtomicU64::new(0));
+    let current_down_speed = Arc::new(AtomicUsize::new(0));
 
-    const BYTES_TO_UPLOAD: u64 = 50 * 1024 * 1024;
-    const BYTES_TO_DOWNLOAD: u64 = 50 * 1024 * 1024;
+    const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
+    const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
 
     let mut down_deadline = get_secs_since_unix_epoch() + 12;
     let exit_signal = Arc::new(AtomicBool::new(false));
@@ -380,8 +381,8 @@ fn main() {
             let last_3 = &down_measurements[down_measurements.len() - 3..];
             let prev_3 =
                 &down_measurements[down_measurements.len() - 6..down_measurements.len() - 3];
-            let last_3_avg = last_3.iter().sum::<u64>() / 3;
-            let prev_3_avg = prev_3.iter().sum::<u64>() / 3;
+            let last_3_avg = last_3.iter().sum::<usize>() / 3;
+            let prev_3_avg = prev_3.iter().sum::<usize>() / 3;
 
             // if last 3 is greater than previous 3 + 20% spawn another thread
             if last_3_avg as f64 > prev_3_avg as f64 + ((prev_3_avg as f64 / 3.0) * 0.2) {
@@ -499,8 +500,8 @@ fn main() {
             // and compare them
             let last_3 = &up_measurements[up_measurements.len() - 3..];
             let prev_3 = &up_measurements[up_measurements.len() - 6..up_measurements.len() - 3];
-            let last_3_avg = last_3.iter().sum::<u64>() / 3;
-            let prev_3_avg = prev_3.iter().sum::<u64>() / 3;
+            let last_3_avg = last_3.iter().sum::<usize>() / 3;
+            let prev_3_avg = prev_3.iter().sum::<usize>() / 3;
 
             // if last 3 is greater than previous 3 + 20% spawn another thread
             if last_3_avg as f64 > prev_3_avg as f64 + ((prev_3_avg as f64 / 3.0) * 0.2) {

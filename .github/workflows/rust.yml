@@ -10,7 +10,6 @@
 # Supported platforms run the following tasks:
 # - cargo fmt
 # - cargo test (built/test in separate steps)
-# - cargo clippy (apparently faster to do it after the build/test)
 #
 # Unsupported platforms run the following tasks:
 # - cargo check
@@ -136,7 +135,7 @@ jobs:
           - {
               os: "ubuntu-latest",
               target: "x86_64-unknown-linux-musl",
-              cross: false,
+              cross: true,
               rust: stable,
             }
           - {
@@ -150,12 +149,6 @@ jobs:
           - {
               os: "ubuntu-latest",
               target: "x86_64-unknown-linux-gnu",
-              cross: false,
-              rust: beta,
-            }
-          - {
-              os: "macos-12",
-              target: "x86_64-apple-darwin",
               cross: false,
               rust: beta,
             }
@@ -182,21 +175,14 @@ jobs:
               rust: stable,
             }
 
-          # PowerPC 64 LE
+          # arm5
           - {
               os: "ubuntu-latest",
-              target: "powerpc64le-unknown-linux-gnu",
+              target: "armv5te-unknown-linux-musl",
               cross: true,
               rust: stable,
             }
 
-          # Risc-V 64gc
-          - {
-              os: "ubuntu-latest",
-              target: "riscv64gc-unknown-linux-gnu",
-              cross: true,
-              rust: stable,
-            }
 
     steps:
       - name: Checkout repository

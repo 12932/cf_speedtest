@@ -35,7 +35,8 @@ impl std::io::Read for UploadHelper {
             buf[i] = 1;
         }
 
-        self.byte_ctr.fetch_add(buf.len() as usize, Ordering::SeqCst);
+        self.byte_ctr
+            .fetch_add(buf.len() as usize, Ordering::SeqCst);
         self.total_uploaded_counter
             .fetch_add(buf.len() as usize, Ordering::SeqCst);
         Ok(buf.len())
@@ -53,7 +54,7 @@ fn get_secs_since_unix_epoch() -> usize {
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
 
-	since_the_epoch.as_secs() as usize
+    since_the_epoch.as_secs() as usize
 }
 
 // Given n bytes, return
@@ -220,7 +221,7 @@ fn download_test(
         .expect("Couldn't create download request");
 
     let mut resp_reader = resp.into_reader();
-    let mut total_bytes_sank : usize = 0;
+    let mut total_bytes_sank: usize = 0;
 
     loop {
         // exit if we have passed deadline

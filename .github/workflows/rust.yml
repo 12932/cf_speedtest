@@ -178,7 +178,7 @@ jobs:
           # arm5
           - {
               os: "ubuntu-latest",
-              target: "armv5te-unknown-linux-musl",
+              target: "armv5te-unknown-linux-musleabi",
               cross: true,
               rust: stable,
             }

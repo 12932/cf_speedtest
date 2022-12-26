@@ -11,14 +11,56 @@ fn test_download() {
     let total_bytes_counter = Arc::new(AtomicUsize::new(0));
     let current_down = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
-    download_test(1, &total_bytes_counter, &current_down, &exit_signal).unwrap();
+
+
+	let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
+	let current_down_clone = Arc::clone(&current_down.clone());
+	let exit_signal_clone = Arc::clone(&exit_signal.clone());
+
+	let handle = std::thread::spawn(move || {
+    	download_test(1, &total_downloaded_bytes_counter, 
+			&current_down_clone, 
+			&exit_signal_clone).unwrap();
+	});
+
+	for _ in 0..10 {
+		std::thread::sleep(std::time::Duration::from_millis(1000));
+		if total_bytes_counter.load(Ordering::SeqCst) >= 1 {
+			break;
+		}
+	}
+
+	assert!(total_bytes_counter.load(Ordering::SeqCst) >= 1);
+
+	exit_signal.store(true, Ordering::SeqCst);
+	handle.join();
 }
 
 #[test]
 fn test_upload() {
     let upload_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
-    upload_test(1, &upload_counter, &exit_signal).unwrap();
+
+
+	let total_bytes_uploaded_counter = Arc::clone(&upload_counter);
+	let exit_signal_clone = Arc::clone(&exit_signal);
+
+	let handle = std::thread::spawn(move || {
+    	upload_test(1, &total_bytes_uploaded_counter, &exit_signal_clone).unwrap();
+	});
+
+	for _ in 0..10 {
+		std::thread::sleep(std::time::Duration::from_millis(1000));
+		if upload_counter.load(Ordering::SeqCst) >= 1 {
+			break;
+		}
+		
+	}
+
+	assert!(upload_counter.load(Ordering::SeqCst) >= 1);
+
+	exit_signal.store(true, Ordering::SeqCst);
+	handle.join();
 }
 
 #[test]

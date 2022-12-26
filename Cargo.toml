@@ -12,6 +12,7 @@ ureq = "*"
 chrono = "*"
 rustls = "*"
 webpki-roots = "*"
+argh = "*"
 
 [profile.release]
 #debug = true

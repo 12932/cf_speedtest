@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
-use std::env;
-use ureq::Agent;
 use std::net::TcpStream;
+use argh::FromArgs;
+
 
 use rustls::{OwnedTrustAnchor, RootCertStore};
 
@@ -55,6 +55,19 @@ struct UploadHelper {
     byte_ctr: Arc<AtomicUsize>,
     total_uploaded_counter: Arc<AtomicUsize>,
     exit_signal: Arc<AtomicBool>,
+}
+
+#[derive(FromArgs)]
+/// A speedtest CLI written in Rust
+struct UserArgs {
+
+	/// how many download threads to use (default 4)
+	#[argh(option, default = "4")]
+	download_thread_count: usize,
+
+	/// how many upload threads to use (default 4)
+	#[argh(option, default = "4")]
+	upload_thread_count: usize,
 }
 
 fn get_secs_since_unix_epoch() -> usize {
@@ -130,6 +143,17 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
 	}
 }
 
+
+fn get_appropriate_buff_size(speed: usize) -> u64 {
+	match speed {
+		0..=1000 => 4,
+		1001..=10000 => 32,
+		10001..=100000 => 512,
+		100001..=1000000 => 4096,
+		1000001.. => 16384,
+		_ => 16384,
+	}
+}
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
 // (they use Maxmind)
 fn get_our_ip_address_country() -> Result<String> {
@@ -278,14 +302,7 @@ fn download_test(
 			// if we are fast, take big chunks
 			// if we are slow, take small chunks
 			let current_down_speed = current_down_speed.load(Ordering::Relaxed);
-			let current_recv_buff = match current_down_speed {
-				0..=1000 => 4,
-				1001..=10000 => 32,
-				10001..=100000 => 512,
-				100001..=1000000 => 4096,
-				1000001.. => 16384,
-				_ => 16384,
-			};
+			let current_recv_buff = get_appropriate_buff_size(current_down_speed);
 
 			// copy bytes into the void
 			let bytes_sank = std::io::copy(
@@ -431,6 +448,10 @@ fn print_test_preamble() {
 }
 
 fn main() {
+	let config: UserArgs = argh::from_env();
+
+
+	/* 
 	let args: Vec<String> = env::args().collect();
 
     let download_thread_count = match args.get(1) {
@@ -442,6 +463,7 @@ fn main() {
 		Some(x) => x.parse().unwrap_or(1),
 		None => 1,
 	};
+	*/
 
     print_test_preamble();
 
@@ -461,7 +483,7 @@ fn main() {
     let mut down_handles = vec![];
 	
 	// Spawn x download threads
-    for i in 0..download_thread_count {
+    for i in 0..config.download_thread_count {
         let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_down_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
@@ -470,7 +492,7 @@ fn main() {
 			if i > 0 {
 				// sleep a little to hit a new cloudflare metal
             	// (each metal will throttle to 1 gigabit)
-				std::thread::sleep(std::time::Duration::from_millis(i * 250));
+				std::thread::sleep(std::time::Duration::from_millis((i * 250).try_into().unwrap()));
 			}
 
             loop {
@@ -554,7 +576,7 @@ fn main() {
 
     // spawn x uploader threads
     let mut up_handles = vec![];
-    for i in 0..upload_thread_count {
+    for i in 0..config.upload_thread_count {
         let total_bytes_uploaded_counter = Arc::clone(&total_uploaded_bytes_counter);
         let exit_signal_clone = Arc::clone(&exit_signal);
         let handle = std::thread::spawn(move || {

@@ -1,10 +1,15 @@
 use std::io::Read;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
+use std::env;
 use ureq::Agent;
+use std::net::TcpStream;
+
+use rustls::{OwnedTrustAnchor, RootCertStore};
 
 #[cfg(test)]
 mod tests;
@@ -18,7 +23,9 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.31)";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.34)";
+
+static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 
 impl std::io::Read for UploadHelper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -66,6 +73,11 @@ fn get_secs_since_unix_epoch() -> usize {
 // and never more than 1024. the bit value should just be calculated off
 // the byte value
 fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
+	const KILOBYTE: f64 = 1024.0;
+	const MEGABYTE: f64 = KILOBYTE * KILOBYTE;
+	const GIGABYTE: f64 = MEGABYTE * KILOBYTE;
+	const TERABYTE: f64 = GIGABYTE * KILOBYTE;
+
     let mut bytes = bytes as f64;
     let byte_unit: char;
     let bit_unit: char;
@@ -73,18 +85,18 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
 
     if bytes < 1024.0 {
         byte_unit = '\0';
-    } else if bytes < 1024i32.pow(2) as f64 {
+    } else if bytes < MEGABYTE as f64 {
         byte_unit = 'K';
-        bytes /= 1024.0;
-    } else if bytes < 1024i32.pow(3) as f64 {
+        bytes /= KILOBYTE;
+    } else if bytes < GIGABYTE as f64 {
         byte_unit = 'M';
-        bytes /= 1024i32.pow(2) as f64;
-    } else if bytes < 1024i32.pow(4) as f64 {
+        bytes /= MEGABYTE as f64;
+    } else if bytes < TERABYTE as f64 {
         byte_unit = 'G';
-        bytes /= 1024i32.pow(3) as f64;
+        bytes /= GIGABYTE as f64;
     } else {
         byte_unit = 'T';
-        bytes /= 1024i32.pow(4) as f64;
+        bytes /= TERABYTE as f64;
     }
 
     bits = bytes * 8.;
@@ -101,6 +113,9 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
             'G' => 't',
             'T' => 'p',
 
+			// I think it will be a long time before
+			// we get any faster
+
             _ => '?',
         };
     } else {
@@ -108,10 +123,11 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
         bit_unit = byte_unit.to_ascii_lowercase();
     }
 
-    Ok((
-        format!("{:.2} {}B", bytes, byte_unit),
-        format!("{:.2} {}b", bits, bit_unit),
-    ))
+	match (byte_unit, bit_unit) {
+		('\0', '\0') => return Ok((format!("{:.2} B", bytes), format!("{:.2} b", bits))),
+		('\0', _) => return Ok((format!("{:.2} B", bytes), format!("{:.2} {}b", bits, bit_unit))),
+		_ => return Ok((format!("{:.2} {}B", bytes, byte_unit), format!("{:.2} {}b", bits, bit_unit))),
+	}
 }
 
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
@@ -184,26 +200,42 @@ fn upload_test(
     total_up_bytes_counter: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let agent = Agent::new();
+    let my_agent = ureq::AgentBuilder::new()
+		.timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+		.redirects(0)
+		.build();
 
-    let upload_helper = UploadHelper {
-        bytes_to_send: bytes,
-        byte_ctr: Arc::new(AtomicUsize::new(0)),
-        total_uploaded_counter: total_up_bytes_counter.clone(),
-        exit_signal: exit_signal.clone(),
-    };
 
-    let resp = agent
-        .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
-        .set("Content-Type", "text/plain;charset=UTF-8")
-        .set("User-Agent", OUR_USER_AGENT)
-        .send(upload_helper)
-        .expect("Couldn't create upload request");
+	loop {
+		let upload_helper = UploadHelper {
+			bytes_to_send: bytes,
+			byte_ctr: Arc::new(AtomicUsize::new(0)),
+			total_uploaded_counter: total_up_bytes_counter.clone(),
+			exit_signal: exit_signal.clone(),
+		};
+	
+		let resp = match my_agent
+        	.post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
+        	.set("Content-Type", "text/plain;charset=UTF-8")
+        	.set("User-Agent", OUR_USER_AGENT)
+        	.send(upload_helper)
+		{
+			Ok(resp) => resp,
+			Err(err) => {
+				eprintln!("Error in upload thread: {}", err);
+				return Ok(());
+			}
+		};
 
-    // read the POST response body into the void
-    let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
+   		// read the POST response body into the void if response is okay
+  		let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
 
-    Ok(())
+		if exit_signal.load(Ordering::Relaxed) {
+			break;
+		}
+	}
+
+	return Ok(());
 }
 
 // download some bytes from cloudflare
@@ -213,14 +245,111 @@ fn download_test(
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    // not using an agent because we want each thread
-    // to have its own connection
-    let resp = ureq::get(format!("{}&bytes={}", CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL, bytes).as_str())
-        .set("User-Agent", OUR_USER_AGENT)
-        .call()
-        .expect("Couldn't create download request");
+    let my_agent = ureq::AgentBuilder::new()
+		.timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+		.redirects(0)
+		.build();
 
-    let mut resp_reader = resp.into_reader();
+	// constantly make requests for bytes, and only exit
+	// when signalled to do so via exit_signal
+    loop {
+    
+		let resp =
+			match my_agent.get(format!("{}&bytes={}", CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL, bytes).as_str())
+				.set("User-Agent", OUR_USER_AGENT)
+				.call()
+			{
+				Ok(resp) => resp,
+				Err(err) => {
+					eprintln!("Error in download thread: {}", err);
+					return Ok(());
+				}
+			};
+
+		let mut resp_reader = resp.into_reader();
+		let mut total_bytes_sank: usize = 0;
+
+		loop {
+			// exit if we have passed deadline
+			if exit_signal.load(Ordering::Relaxed) {
+				return Ok(());
+			}
+
+			// if we are fast, take big chunks
+			// if we are slow, take small chunks
+			let current_down_speed = current_down_speed.load(Ordering::Relaxed);
+			let current_recv_buff = match current_down_speed {
+				0..=1000 => 4,
+				1001..=10000 => 32,
+				10001..=100000 => 512,
+				100001..=1000000 => 4096,
+				1000001.. => 16384,
+				_ => 16384,
+			};
+
+			// copy bytes into the void
+			let bytes_sank = std::io::copy(
+				&mut resp_reader.by_ref().take(current_recv_buff),
+				&mut std::io::sink(),
+			)? as usize;
+
+			if bytes_sank == 0 {
+				if total_bytes_sank == 0 {
+					panic!("Cloudflare is sending us empty responses?!")
+				}
+
+				break;
+			}
+
+			total_bytes_sank += bytes_sank;
+			total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
+		}
+
+    	return Ok(());
+    }
+}
+
+// download some bytes from cloudflare, without decrypting
+fn download_test_no_decrypt(
+    bytes: usize,
+    total_bytes_counter: &Arc<AtomicUsize>,
+    current_down_speed: &Arc<AtomicUsize>,
+    exit_signal: &Arc<AtomicBool>,
+) -> Result<()> {
+    let mut root_store = RootCertStore::empty();
+    root_store.add_server_trust_anchors(
+        webpki_roots::TLS_SERVER_ROOTS
+            .0
+            .iter()
+            .map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject,
+                    ta.spki,
+                    ta.name_constraints,
+                )
+            }),
+    );
+
+	
+    let config = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let server_name = "speed.cloudflare.com".try_into().unwrap();
+    let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name).unwrap();
+    let mut sock = TcpStream::connect("speed.cloudflare.com:443").unwrap();
+   
+	
+	let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+
+	let header_strings = format!(
+		"GET /__down?measId=0&bytes={} HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n",
+		bytes
+	);
+	
+    tls.write_all(header_strings.as_bytes()).unwrap();
+    
     let mut total_bytes_sank: usize = 0;
 
     loop {
@@ -243,7 +372,7 @@ fn download_test(
 
         // copy bytes into the void
         let bytes_sank = std::io::copy(
-            &mut resp_reader.by_ref().take(current_recv_buff),
+            &mut std::io::Read::by_ref(&mut sock).take(current_recv_buff),
             &mut std::io::sink(),
         )? as usize;
 
@@ -261,11 +390,8 @@ fn download_test(
     Ok(())
 }
 
-fn main() {
-    let download_thread_count = 4;
-    let upload_thread_count = 4;
-
-    let now = chrono::Local::now();
+fn print_test_preamble() {
+	let now = chrono::Local::now();
     println!(
         "{:<32} {} {}",
         "Start:",
@@ -302,12 +428,30 @@ fn main() {
     );
 
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
+}
+
+fn main() {
+	let args: Vec<String> = env::args().collect();
+
+    let download_thread_count = match args.get(1) {
+		Some(x) => x.parse().unwrap_or(1),
+		None => 1,
+	};
+
+    let upload_thread_count = match args.get(2) {
+		Some(x) => x.parse().unwrap_or(1),
+		None => 1,
+	};
+
+    print_test_preamble();
 
     let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
 
     let current_down_speed = Arc::new(AtomicUsize::new(0));
 
+	// these are just the file sizes of our upload/download http requests
+	// the tests are duration-based not size-based
     const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
     const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
 
@@ -315,23 +459,27 @@ fn main() {
     let exit_signal = Arc::new(AtomicBool::new(false));
 
     let mut down_handles = vec![];
+	
+	// Spawn x download threads
     for i in 0..download_thread_count {
         let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_down_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
         let handle = std::thread::spawn(move || {
-            // sleep a little to hit a new cloudflare metal
-            // (each metal will throttle to 1 gigabit per ip in my testing)
-            std::thread::sleep(std::time::Duration::from_millis(i * 250));
-            //println!("Thread {i} starting...");
+
+			if i > 0 {
+				// sleep a little to hit a new cloudflare metal
+            	// (each metal will throttle to 1 gigabit)
+				std::thread::sleep(std::time::Duration::from_millis(i * 250));
+			}
+
             loop {
-                let result = download_test(
+                match download_test_no_decrypt(
                     BYTES_TO_DOWNLOAD,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
-                    &exit_signal_clone,
-                );
-                match result {
+                    &exit_signal_clone)
+				{
                     Ok(_) => {}
                     Err(e) => {
                         println!("Error in download test thread {}: {:?}", i, e);
@@ -353,12 +501,12 @@ fn main() {
     total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
 
     let mut down_measurements = vec![];
+    let mut speed_increase_count = 1;
 
     // print download speed
-    // adaptively spawn more threads if we are getting increasingly faster
     loop {
         let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
-        let bytes_down_diff = bytes_down - last_bytes_down;
+        let bytes_down_diff = (bytes_down - last_bytes_down) * 4;
 
         // set current_down
         current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
@@ -375,53 +523,9 @@ fn main() {
                 bit_speed = speed_values.1
             );
         }
+        io::stdout().flush().unwrap();
 
-        if down_measurements.len() > 6 {
-            // average the last 3 elements to the previous 3
-            // and compare them
-            let last_3 = &down_measurements[down_measurements.len() - 3..];
-            let prev_3 =
-                &down_measurements[down_measurements.len() - 6..down_measurements.len() - 3];
-            let last_3_avg = last_3.iter().sum::<usize>() / 3;
-            let prev_3_avg = prev_3.iter().sum::<usize>() / 3;
-
-            // if last 3 is greater than previous 3 + 20% spawn another thread
-            if last_3_avg as f64 > prev_3_avg as f64 + ((prev_3_avg as f64 / 3.0) * 0.2) {
-                // extend the deadline slightly
-                down_deadline += 1;
-
-                let total_downloaded_bytes_counter =
-                    Arc::clone(&total_downloaded_bytes_counter.clone());
-                let current_down_clone = Arc::clone(&current_down_speed.clone());
-                let exit_signal_clone = Arc::clone(&exit_signal.clone());
-                let handle = std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    // println!("Starting new thread");
-                    loop {
-                        let result = download_test(
-                            BYTES_TO_DOWNLOAD,
-                            &total_downloaded_bytes_counter,
-                            &current_down_clone,
-                            &exit_signal_clone,
-                        );
-                        match result {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("Error in download test thread {:?}", e);
-                                return;
-                            }
-                        }
-
-                        // exit if we have passed the deadline
-                        if exit_signal_clone.load(Ordering::Relaxed) {
-                            //println!("Thread {} exiting...", i);
-                            return;
-                        }
-                    }
-                });
-                down_handles.push(handle);
-            }
-        }
+		// if we need to spawn more threads, do it here
 
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
@@ -455,17 +559,16 @@ fn main() {
         let exit_signal_clone = Arc::clone(&exit_signal);
         let handle = std::thread::spawn(move || {
             loop {
-                let result = upload_test(
-                    BYTES_TO_UPLOAD,
-                    &total_bytes_uploaded_counter,
-                    &exit_signal_clone,
-                );
-                match result {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("Error in upload test thread {}: {:?}", i, e);
-                    }
-                }
+                match upload_test(
+						BYTES_TO_UPLOAD,
+						&total_bytes_uploaded_counter,
+						&exit_signal_clone)
+					{
+						Ok(_) => {}
+						Err(e) => {
+							println!("Error in upload test thread {}: {:?}", i, e);
+						}
+					}
 
                 // exit if we have passed the deadline
                 if get_secs_since_unix_epoch() > up_deadline {
@@ -495,49 +598,6 @@ fn main() {
             byte_speed = speed_values.0,
             bit_speed = speed_values.1
         );
-
-        if up_measurements.len() > 6 {
-            // average the last 3 elements to the previous 3
-            // and compare them
-            let last_3 = &up_measurements[up_measurements.len() - 3..];
-            let prev_3 = &up_measurements[up_measurements.len() - 6..up_measurements.len() - 3];
-            let last_3_avg = last_3.iter().sum::<usize>() / 3;
-            let prev_3_avg = prev_3.iter().sum::<usize>() / 3;
-
-            // if last 3 is greater than previous 3 + 20% spawn another thread
-            if last_3_avg as f64 > prev_3_avg as f64 + ((prev_3_avg as f64 / 3.0) * 0.2) {
-                // extend the deadline slightly
-                up_deadline += 1;
-
-                let total_bytes_uploaded_counter =
-                    Arc::clone(&total_uploaded_bytes_counter.clone());
-                let exit_signal_clone = Arc::clone(&exit_signal.clone());
-                let handle = std::thread::spawn(move || {
-                    // println!("Starting new thread");
-                    loop {
-                        let result = upload_test(
-                            BYTES_TO_UPLOAD,
-                            &total_bytes_uploaded_counter,
-                            &exit_signal_clone,
-                        );
-                        match result {
-                            Ok(_) => {}
-                            Err(e) => {
-                                println!("Error in upload test thread {:?}", e);
-                                return;
-                            }
-                        }
-
-                        // exit if we have passed the deadline
-                        if exit_signal_clone.load(Ordering::Relaxed) {
-                            //println!("Thread {} exiting...", i);
-                            return;
-                        }
-                    }
-                });
-                up_handles.push(handle);
-            }
-        }
 
         std::thread::sleep(std::time::Duration::from_millis(1000));
 

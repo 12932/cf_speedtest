@@ -46,7 +46,9 @@ name = "cf_speedtest"
 version = "0.2.1"
 dependencies = [
  "chrono",
+ "rustls",
  "ureq",
+ "webpki-roots",
 ]
 
 [[package]]

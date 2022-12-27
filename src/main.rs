@@ -79,7 +79,7 @@ fn get_secs_since_unix_epoch() -> usize {
 // basically, the BYTE value should always be greater than 1
 // and never more than 1024. the bit value should just be calculated off
 // the byte value
-fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
+fn get_appropriate_byte_unit(bytes: u64) -> Result<(String, String)> {
     const KILOBYTE: f64 = 1024.0;
     const MEGABYTE: f64 = KILOBYTE * KILOBYTE;
     const GIGABYTE: f64 = MEGABYTE * KILOBYTE;
@@ -439,7 +439,7 @@ fn main() {
         current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
         down_measurements.push(bytes_down_diff);
 
-        let speed_values = get_appropriate_byte_unit(bytes_down_diff).unwrap();
+        let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64).unwrap();
         // only print progress if we are before deadline
         if get_secs_since_unix_epoch() < down_deadline {
             println!(
@@ -516,7 +516,7 @@ fn main() {
         let bytes_up_diff = bytes_up - last_bytes_up;
         up_measurements.push(bytes_up_diff);
 
-        let speed_values = get_appropriate_byte_unit(bytes_up_diff).unwrap();
+        let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64).unwrap();
 
         println!(
             "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",

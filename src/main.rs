@@ -5,11 +5,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
-use std::net::TcpStream;
 use argh::FromArgs;
 
-
-use rustls::{OwnedTrustAnchor, RootCertStore};
 
 #[cfg(test)]
 mod tests;
@@ -63,11 +60,11 @@ struct UserArgs {
 
 	/// how many download threads to use (default 4)
 	#[argh(option, default = "4")]
-	download_thread_count: usize,
+	download_threads: usize,
 
 	/// how many upload threads to use (default 4)
 	#[argh(option, default = "4")]
-	upload_thread_count: usize,
+	upload_threads: usize,
 }
 
 fn get_secs_since_unix_epoch() -> usize {
@@ -326,86 +323,6 @@ fn download_test(
     }
 }
 
-// download some bytes from cloudflare, without decrypting
-fn download_test_no_decrypt(
-    bytes: usize,
-    total_bytes_counter: &Arc<AtomicUsize>,
-    current_down_speed: &Arc<AtomicUsize>,
-    exit_signal: &Arc<AtomicBool>,
-) -> Result<()> {
-    let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(
-        webpki_roots::TLS_SERVER_ROOTS
-            .0
-            .iter()
-            .map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }),
-    );
-
-	
-    let config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let server_name = "speed.cloudflare.com".try_into().unwrap();
-    let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name).unwrap();
-    let mut sock = TcpStream::connect("speed.cloudflare.com:443").unwrap();
-   
-	
-	let mut tls = rustls::Stream::new(&mut conn, &mut sock);
-
-	let header_strings = format!(
-		"GET /__down?measId=0&bytes={} HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\n\r\n",
-		bytes
-	);
-	
-    tls.write_all(header_strings.as_bytes()).unwrap();
-    
-    let mut total_bytes_sank: usize = 0;
-
-    loop {
-        // exit if we have passed deadline
-        if exit_signal.load(Ordering::Relaxed) {
-            break;
-        }
-
-        // if we are fast, take big chunks
-        // if we are slow, take small chunks
-        let current_down_speed = current_down_speed.load(Ordering::Relaxed);
-        let current_recv_buff = match current_down_speed {
-            0..=1000 => 4,
-            1001..=10000 => 32,
-            10001..=100000 => 512,
-            100001..=1000000 => 4096,
-            1000001..=10000000 => 16384,
-            _ => 16384,
-        };
-
-        // copy bytes into the void
-        let bytes_sank = std::io::copy(
-            &mut std::io::Read::by_ref(&mut sock).take(current_recv_buff),
-            &mut std::io::sink(),
-        )? as usize;
-
-        if bytes_sank == 0 {
-            if total_bytes_sank == 0 {
-                panic!("Cloudflare is sending us empty responses?!")
-            }
-
-            break;
-        }
-        total_bytes_sank += bytes_sank;
-        total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
-    }
-
-    Ok(())
-}
 
 fn print_test_preamble() {
 	let now = chrono::Local::now();
@@ -477,13 +394,13 @@ fn main() {
     const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
     const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
 
-    let mut down_deadline = get_secs_since_unix_epoch() + 12;
+    let down_deadline = get_secs_since_unix_epoch() + 12;
     let exit_signal = Arc::new(AtomicBool::new(false));
 
     let mut down_handles = vec![];
 	
 	// Spawn x download threads
-    for i in 0..config.download_thread_count {
+    for i in 0..config.download_threads {
         let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_down_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
@@ -496,7 +413,7 @@ fn main() {
 			}
 
             loop {
-                match download_test_no_decrypt(
+                match download_test(
                     BYTES_TO_DOWNLOAD,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
@@ -523,12 +440,11 @@ fn main() {
     total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
 
     let mut down_measurements = vec![];
-    let mut speed_increase_count = 1;
 
     // print download speed
     loop {
         let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
-        let bytes_down_diff = (bytes_down - last_bytes_down) * 4;
+        let bytes_down_diff = bytes_down - last_bytes_down;
 
         // set current_down
         current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
@@ -572,11 +488,11 @@ fn main() {
     exit_signal.store(false, Ordering::SeqCst);
 
     println!("Starting upload tests...");
-    let mut up_deadline = get_secs_since_unix_epoch() + 12;
+    let up_deadline = get_secs_since_unix_epoch() + 12;
 
     // spawn x uploader threads
     let mut up_handles = vec![];
-    for i in 0..config.upload_thread_count {
+    for i in 0..config.upload_threads {
         let total_bytes_uploaded_counter = Arc::clone(&total_uploaded_bytes_counter);
         let exit_signal_clone = Arc::clone(&exit_signal);
         let handle = std::thread::spawn(move || {

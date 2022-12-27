@@ -36,7 +36,7 @@ fn test_download() {
     assert!(total_bytes_counter.load(Ordering::SeqCst) >= 1);
 
     exit_signal.store(true, Ordering::SeqCst);
-    handle.join();
+    let _ = handle.join();
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn test_upload() {
     assert!(upload_counter.load(Ordering::SeqCst) >= 1);
 
     exit_signal.store(true, Ordering::SeqCst);
-    handle.join();
+    let _ = handle.join();
 }
 
 #[test]

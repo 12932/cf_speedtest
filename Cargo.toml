@@ -1,6 +1,6 @@
 [package]
 name = "cf_speedtest"
-version = "0.2.1"
+version = "0.3.5"
 authors = ["007 <007>"]
 edition = "2021"
 

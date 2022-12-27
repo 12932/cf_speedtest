@@ -19,7 +19,7 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.34)";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.35)";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 
@@ -38,10 +38,9 @@ impl std::io::Read for UploadHelper {
             buf[i] = 1;
         }
 
-        self.byte_ctr
-            .fetch_add(buf.len() as usize, Ordering::SeqCst);
+        self.byte_ctr.fetch_add(buf.len(), Ordering::SeqCst);
         self.total_uploaded_counter
-            .fetch_add(buf.len() as usize, Ordering::SeqCst);
+            .fetch_add(buf.len(), Ordering::SeqCst);
         Ok(buf.len())
     }
 }
@@ -93,18 +92,18 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
 
     if bytes < 1024.0 {
         byte_unit = '\0';
-    } else if bytes < MEGABYTE as f64 {
+    } else if bytes < MEGABYTE {
         byte_unit = 'K';
         bytes /= KILOBYTE;
-    } else if bytes < GIGABYTE as f64 {
+    } else if bytes < GIGABYTE {
         byte_unit = 'M';
-        bytes /= MEGABYTE as f64;
-    } else if bytes < TERABYTE as f64 {
+        bytes /= MEGABYTE;
+    } else if bytes < TERABYTE {
         byte_unit = 'G';
-        bytes /= GIGABYTE as f64;
+        bytes /= GIGABYTE;
     } else {
         byte_unit = 'T';
-        bytes /= TERABYTE as f64;
+        bytes /= TERABYTE;
     }
 
     bits = bytes * 8.;
@@ -131,17 +130,12 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
     }
 
     match (byte_unit, bit_unit) {
-        ('\0', '\0') => return Ok((format!("{:.2} B", bytes), format!("{:.2} b", bits))),
-        ('\0', _) => {
-            return Ok((
-                format!("{:.2} B", bytes),
-                format!("{:.2} {}b", bits, bit_unit),
-            ))
-        }
+        ('\0', '\0') => return Ok((format!("{bytes:.2} B"), format!("{bits:.2} b"))),
+        ('\0', _) => return Ok((format!("{bytes:.2} B"), format!("{bits:.2} {bit_unit}b"))),
         _ => {
             return Ok((
-                format!("{:.2} {}B", bytes, byte_unit),
-                format!("{:.2} {}b", bits, bit_unit),
+                format!("{bytes:.2} {byte_unit}B"),
+                format!("{bits:.2} {bit_unit}b"),
             ))
         }
     }
@@ -248,7 +242,7 @@ fn upload_test(
         {
             Ok(resp) => resp,
             Err(err) => {
-                eprintln!("Error in upload thread: {}", err);
+                eprintln!("Error in upload thread: {err}");
                 return Ok(());
             }
         };
@@ -257,11 +251,9 @@ fn upload_test(
         let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
 
         if exit_signal.load(Ordering::Relaxed) {
-            break;
+            return Ok(());
         }
     }
-
-    return Ok(());
 }
 
 // download some bytes from cloudflare
@@ -276,54 +268,48 @@ fn download_test(
         .redirects(0)
         .build();
 
-    // constantly make requests for bytes, and only exit
-    // when signalled to do so via exit_signal
+    let resp = match my_agent
+        .get(format!("{CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL}&bytes={bytes}").as_str())
+        .set("User-Agent", OUR_USER_AGENT)
+        .call()
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            eprintln!("Error in download thread: {err}");
+            return Ok(());
+        }
+    };
+
+    let mut resp_reader = resp.into_reader();
+    let mut total_bytes_sank: usize = 0;
+
     loop {
-        let resp = match my_agent
-            .get(format!("{}&bytes={}", CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL, bytes).as_str())
-            .set("User-Agent", OUR_USER_AGENT)
-            .call()
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                eprintln!("Error in download thread: {}", err);
-                return Ok(());
-            }
-        };
-
-        let mut resp_reader = resp.into_reader();
-        let mut total_bytes_sank: usize = 0;
-
-        loop {
-            // exit if we have passed deadline
-            if exit_signal.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-
-            // if we are fast, take big chunks
-            // if we are slow, take small chunks
-            let current_down_speed = current_down_speed.load(Ordering::Relaxed);
-            let current_recv_buff = get_appropriate_buff_size(current_down_speed);
-
-            // copy bytes into the void
-            let bytes_sank = std::io::copy(
-                &mut resp_reader.by_ref().take(current_recv_buff),
-                &mut std::io::sink(),
-            )? as usize;
-
-            if bytes_sank == 0 {
-                if total_bytes_sank == 0 {
-                    panic!("Cloudflare is sending us empty responses?!")
-                }
-
-                break;
-            }
-
-            total_bytes_sank += bytes_sank;
-            total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
+        // exit if we have passed deadline
+        if exit_signal.load(Ordering::Relaxed) {
+            return Ok(());
         }
 
-        return Ok(());
+        // if we are fast, take big chunks
+        // if we are slow, take small chunks
+        let current_down_speed = current_down_speed.load(Ordering::Relaxed);
+        let current_recv_buff = get_appropriate_buff_size(current_down_speed);
+
+        // copy bytes into the void
+        let bytes_sank = std::io::copy(
+            &mut resp_reader.by_ref().take(current_recv_buff),
+            &mut std::io::sink(),
+        )? as usize;
+
+        if bytes_sank == 0 {
+            if total_bytes_sank == 0 {
+                panic!("Cloudflare is sending us empty responses?!")
+            }
+
+            return Ok(());
+        }
+
+        total_bytes_sank += bytes_sank;
+        total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
     }
 }
 
@@ -424,7 +410,7 @@ fn main() {
                 ) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("Error in download test thread {}: {:?}", i, e);
+                        println!("Error in download test thread {i}: {e:?}");
                         return;
                     }
                 }
@@ -507,7 +493,7 @@ fn main() {
                 ) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("Error in upload test thread {}: {:?}", i, e);
+                        println!("Error in upload test thread {i}: {e:?}");
                     }
                 }
 

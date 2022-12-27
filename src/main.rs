@@ -1,3 +1,4 @@
+use argh::FromArgs;
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -5,8 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
-use argh::FromArgs;
-
 
 #[cfg(test)]
 mod tests;
@@ -57,14 +56,13 @@ struct UploadHelper {
 #[derive(FromArgs)]
 /// A speedtest CLI written in Rust
 struct UserArgs {
+    /// how many download threads to use (default 4)
+    #[argh(option, default = "4")]
+    download_threads: usize,
 
-	/// how many download threads to use (default 4)
-	#[argh(option, default = "4")]
-	download_threads: usize,
-
-	/// how many upload threads to use (default 4)
-	#[argh(option, default = "4")]
-	upload_threads: usize,
+    /// how many upload threads to use (default 4)
+    #[argh(option, default = "4")]
+    upload_threads: usize,
 }
 
 fn get_secs_since_unix_epoch() -> usize {
@@ -83,10 +81,10 @@ fn get_secs_since_unix_epoch() -> usize {
 // and never more than 1024. the bit value should just be calculated off
 // the byte value
 fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
-	const KILOBYTE: f64 = 1024.0;
-	const MEGABYTE: f64 = KILOBYTE * KILOBYTE;
-	const GIGABYTE: f64 = MEGABYTE * KILOBYTE;
-	const TERABYTE: f64 = GIGABYTE * KILOBYTE;
+    const KILOBYTE: f64 = 1024.0;
+    const MEGABYTE: f64 = KILOBYTE * KILOBYTE;
+    const GIGABYTE: f64 = MEGABYTE * KILOBYTE;
+    const TERABYTE: f64 = GIGABYTE * KILOBYTE;
 
     let mut bytes = bytes as f64;
     let byte_unit: char;
@@ -123,9 +121,8 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
             'G' => 't',
             'T' => 'p',
 
-			// I think it will be a long time before
-			// we get any faster
-
+            // I think it will be a long time before
+            // we get any faster
             _ => '?',
         };
     } else {
@@ -133,23 +130,32 @@ fn get_appropriate_byte_unit(bytes: usize) -> Result<(String, String)> {
         bit_unit = byte_unit.to_ascii_lowercase();
     }
 
-	match (byte_unit, bit_unit) {
-		('\0', '\0') => return Ok((format!("{:.2} B", bytes), format!("{:.2} b", bits))),
-		('\0', _) => return Ok((format!("{:.2} B", bytes), format!("{:.2} {}b", bits, bit_unit))),
-		_ => return Ok((format!("{:.2} {}B", bytes, byte_unit), format!("{:.2} {}b", bits, bit_unit))),
-	}
+    match (byte_unit, bit_unit) {
+        ('\0', '\0') => return Ok((format!("{:.2} B", bytes), format!("{:.2} b", bits))),
+        ('\0', _) => {
+            return Ok((
+                format!("{:.2} B", bytes),
+                format!("{:.2} {}b", bits, bit_unit),
+            ))
+        }
+        _ => {
+            return Ok((
+                format!("{:.2} {}B", bytes, byte_unit),
+                format!("{:.2} {}b", bits, bit_unit),
+            ))
+        }
+    }
 }
 
-
 fn get_appropriate_buff_size(speed: usize) -> u64 {
-	match speed {
-		0..=1000 => 4,
-		1001..=10000 => 32,
-		10001..=100000 => 512,
-		100001..=1000000 => 4096,
-		1000001.. => 16384,
-		_ => 16384,
-	}
+    match speed {
+        0..=1000 => 4,
+        1001..=10000 => 32,
+        10001..=100000 => 512,
+        100001..=1000000 => 4096,
+        1000001.. => 16384,
+        _ => 16384,
+    }
 }
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
 // (they use Maxmind)
@@ -222,41 +228,40 @@ fn upload_test(
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let my_agent = ureq::AgentBuilder::new()
-		.timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
-		.redirects(0)
-		.build();
+        .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+        .redirects(0)
+        .build();
 
+    loop {
+        let upload_helper = UploadHelper {
+            bytes_to_send: bytes,
+            byte_ctr: Arc::new(AtomicUsize::new(0)),
+            total_uploaded_counter: total_up_bytes_counter.clone(),
+            exit_signal: exit_signal.clone(),
+        };
 
-	loop {
-		let upload_helper = UploadHelper {
-			bytes_to_send: bytes,
-			byte_ctr: Arc::new(AtomicUsize::new(0)),
-			total_uploaded_counter: total_up_bytes_counter.clone(),
-			exit_signal: exit_signal.clone(),
-		};
-	
-		let resp = match my_agent
-        	.post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
-        	.set("Content-Type", "text/plain;charset=UTF-8")
-        	.set("User-Agent", OUR_USER_AGENT)
-        	.send(upload_helper)
-		{
-			Ok(resp) => resp,
-			Err(err) => {
-				eprintln!("Error in upload thread: {}", err);
-				return Ok(());
-			}
-		};
+        let resp = match my_agent
+            .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
+            .set("Content-Type", "text/plain;charset=UTF-8")
+            .set("User-Agent", OUR_USER_AGENT)
+            .send(upload_helper)
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                eprintln!("Error in upload thread: {}", err);
+                return Ok(());
+            }
+        };
 
-   		// read the POST response body into the void if response is okay
-  		let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
+        // read the POST response body into the void if response is okay
+        let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
 
-		if exit_signal.load(Ordering::Relaxed) {
-			break;
-		}
-	}
+        if exit_signal.load(Ordering::Relaxed) {
+            break;
+        }
+    }
 
-	return Ok(());
+    return Ok(());
 }
 
 // download some bytes from cloudflare
@@ -267,65 +272,63 @@ fn download_test(
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let my_agent = ureq::AgentBuilder::new()
-		.timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
-		.redirects(0)
-		.build();
+        .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+        .redirects(0)
+        .build();
 
-	// constantly make requests for bytes, and only exit
-	// when signalled to do so via exit_signal
+    // constantly make requests for bytes, and only exit
+    // when signalled to do so via exit_signal
     loop {
-    
-		let resp =
-			match my_agent.get(format!("{}&bytes={}", CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL, bytes).as_str())
-				.set("User-Agent", OUR_USER_AGENT)
-				.call()
-			{
-				Ok(resp) => resp,
-				Err(err) => {
-					eprintln!("Error in download thread: {}", err);
-					return Ok(());
-				}
-			};
+        let resp = match my_agent
+            .get(format!("{}&bytes={}", CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL, bytes).as_str())
+            .set("User-Agent", OUR_USER_AGENT)
+            .call()
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                eprintln!("Error in download thread: {}", err);
+                return Ok(());
+            }
+        };
 
-		let mut resp_reader = resp.into_reader();
-		let mut total_bytes_sank: usize = 0;
+        let mut resp_reader = resp.into_reader();
+        let mut total_bytes_sank: usize = 0;
 
-		loop {
-			// exit if we have passed deadline
-			if exit_signal.load(Ordering::Relaxed) {
-				return Ok(());
-			}
+        loop {
+            // exit if we have passed deadline
+            if exit_signal.load(Ordering::Relaxed) {
+                return Ok(());
+            }
 
-			// if we are fast, take big chunks
-			// if we are slow, take small chunks
-			let current_down_speed = current_down_speed.load(Ordering::Relaxed);
-			let current_recv_buff = get_appropriate_buff_size(current_down_speed);
+            // if we are fast, take big chunks
+            // if we are slow, take small chunks
+            let current_down_speed = current_down_speed.load(Ordering::Relaxed);
+            let current_recv_buff = get_appropriate_buff_size(current_down_speed);
 
-			// copy bytes into the void
-			let bytes_sank = std::io::copy(
-				&mut resp_reader.by_ref().take(current_recv_buff),
-				&mut std::io::sink(),
-			)? as usize;
+            // copy bytes into the void
+            let bytes_sank = std::io::copy(
+                &mut resp_reader.by_ref().take(current_recv_buff),
+                &mut std::io::sink(),
+            )? as usize;
 
-			if bytes_sank == 0 {
-				if total_bytes_sank == 0 {
-					panic!("Cloudflare is sending us empty responses?!")
-				}
+            if bytes_sank == 0 {
+                if total_bytes_sank == 0 {
+                    panic!("Cloudflare is sending us empty responses?!")
+                }
 
-				break;
-			}
+                break;
+            }
 
-			total_bytes_sank += bytes_sank;
-			total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
-		}
+            total_bytes_sank += bytes_sank;
+            total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
+        }
 
-    	return Ok(());
+        return Ok(());
     }
 }
 
-
 fn print_test_preamble() {
-	let now = chrono::Local::now();
+    let now = chrono::Local::now();
     println!(
         "{:<32} {} {}",
         "Start:",
@@ -365,22 +368,21 @@ fn print_test_preamble() {
 }
 
 fn main() {
-	let config: UserArgs = argh::from_env();
+    let config: UserArgs = argh::from_env();
 
-
-	/* 
-	let args: Vec<String> = env::args().collect();
+    /*
+    let args: Vec<String> = env::args().collect();
 
     let download_thread_count = match args.get(1) {
-		Some(x) => x.parse().unwrap_or(1),
-		None => 1,
-	};
+        Some(x) => x.parse().unwrap_or(1),
+        None => 1,
+    };
 
     let upload_thread_count = match args.get(2) {
-		Some(x) => x.parse().unwrap_or(1),
-		None => 1,
-	};
-	*/
+        Some(x) => x.parse().unwrap_or(1),
+        None => 1,
+    };
+    */
 
     print_test_preamble();
 
@@ -389,8 +391,8 @@ fn main() {
 
     let current_down_speed = Arc::new(AtomicUsize::new(0));
 
-	// these are just the file sizes of our upload/download http requests
-	// the tests are duration-based not size-based
+    // these are just the file sizes of our upload/download http requests
+    // the tests are duration-based not size-based
     const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
     const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
 
@@ -398,27 +400,28 @@ fn main() {
     let exit_signal = Arc::new(AtomicBool::new(false));
 
     let mut down_handles = vec![];
-	
-	// Spawn x download threads
+
+    // Spawn x download threads
     for i in 0..config.download_threads {
         let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_down_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
         let handle = std::thread::spawn(move || {
-
-			if i > 0 {
-				// sleep a little to hit a new cloudflare metal
-            	// (each metal will throttle to 1 gigabit)
-				std::thread::sleep(std::time::Duration::from_millis((i * 250).try_into().unwrap()));
-			}
+            if i > 0 {
+                // sleep a little to hit a new cloudflare metal
+                // (each metal will throttle to 1 gigabit)
+                std::thread::sleep(std::time::Duration::from_millis(
+                    (i * 250).try_into().unwrap(),
+                ));
+            }
 
             loop {
                 match download_test(
                     BYTES_TO_DOWNLOAD,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
-                    &exit_signal_clone)
-				{
+                    &exit_signal_clone,
+                ) {
                     Ok(_) => {}
                     Err(e) => {
                         println!("Error in download test thread {}: {:?}", i, e);
@@ -463,7 +466,7 @@ fn main() {
         }
         io::stdout().flush().unwrap();
 
-		// if we need to spawn more threads, do it here
+        // if we need to spawn more threads, do it here
 
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
@@ -498,15 +501,15 @@ fn main() {
         let handle = std::thread::spawn(move || {
             loop {
                 match upload_test(
-						BYTES_TO_UPLOAD,
-						&total_bytes_uploaded_counter,
-						&exit_signal_clone)
-					{
-						Ok(_) => {}
-						Err(e) => {
-							println!("Error in upload test thread {}: {:?}", i, e);
-						}
-					}
+                    BYTES_TO_UPLOAD,
+                    &total_bytes_uploaded_counter,
+                    &exit_signal_clone,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        println!("Error in upload test thread {}: {:?}", i, e);
+                    }
+                }
 
                 // exit if we have passed the deadline
                 if get_secs_since_unix_epoch() > up_deadline {

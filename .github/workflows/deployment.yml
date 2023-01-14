@@ -88,8 +88,8 @@ jobs:
 
       - name: Execute choco packaging script
         run: |
-          python "./scripts/windows/choco/choco_packager.py" "./release/bottom_x86_64-pc-windows-msvc.zip" ${{ env.RELEASE_VERSION }} "./scripts/windows/choco/bottom.nuspec.template" "./scripts/windows/choco/chocolateyinstall.ps1.template" "bottom.nuspec" "tools/chocolateyinstall.ps1" "tools/"
-          zip -r choco.zip "bottom.nuspec" "tools"
+          python "./scripts/windows/choco/choco_packager.py" "./release/cf_speedtest_x86_64-pc-windows-msvc.zip" ${{ env.RELEASE_VERSION }} "./scripts/windows/choco/cf_speedtest.nuspec.template" "./scripts/windows/choco/chocolateyinstall.ps1.template" "cf_speedtest.nuspec" "tools/chocolateyinstall.ps1" "tools/"
+          zip -r choco.zip "cf_speedtest.nuspec" "tools"
 
       - name: Move release file into release directory
         shell: bash

@@ -1,6 +1,6 @@
 [package]
 name = "cf_speedtest"
-version = "0.3.5"
+version = "0.3.7"
 authors = ["007 <007>"]
 edition = "2021"
 
@@ -15,8 +15,8 @@ webpki-roots = "*"
 argh = "*"
 
 [profile.release]
-#debug = true
-strip = true
+debug = true
+#strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1

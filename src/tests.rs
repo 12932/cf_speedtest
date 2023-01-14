@@ -12,9 +12,9 @@ fn test_download() {
     let current_down = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 
-    let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
-    let current_down_clone = Arc::clone(&current_down.clone());
-    let exit_signal_clone = Arc::clone(&exit_signal.clone());
+    let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter);
+    let current_down_clone = Arc::clone(&current_down);
+    let exit_signal_clone = Arc::clone(&exit_signal);
 
     let handle = std::thread::spawn(move || {
         download_test(

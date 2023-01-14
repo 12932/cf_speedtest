@@ -1,0 +1,382 @@
+# Builds the following releases:
+# - Binary releases
+# - Debian releases (.deb)
+# - MSI installer for Windows (.msi)
+# - Cirrus CI binaries
+#   - FreeBSD (x86_64)
+#   - macOS (aarch64)
+
+name: "build releases"
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      caller:
+        description: "The calling workflow."
+        default: ""
+        required: false
+        type: string
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_HUSKY_DONT_INSTALL_HOOKS: true
+  COMPLETION_DIR: "target/tmp/cf_speedtest/completion/"
+  MANPAGE_DIR: "target/tmp/cf_speedtest/manpage/"
+
+# TODO: Maybe add retry job in case of timeouts?
+jobs:
+  build-binaries:
+    name: "Build binaries"
+    runs-on: ${{ matrix.info.os }}
+    container: ${{ matrix.info.container }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        info:
+          # ======= Supported targets =======
+          # Linux (x64, x86, aarch64)
+          - {
+              os: "ubuntu-20.04",
+              target: "x86_64-unknown-linux-gnu",
+              cross: false,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "x86_64-unknown-linux-gnu",
+              cross: false,
+              container: quay.io/pypa/manylinux2014_x86_64,
+              suffix: "2-17",
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "i686-unknown-linux-gnu",
+              cross: true,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "x86_64-unknown-linux-musl",
+              cross: false,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "i686-unknown-linux-musl",
+              cross: true,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "aarch64-unknown-linux-gnu",
+              cross: true,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "aarch64-unknown-linux-musl",
+              cross: true,
+            }
+
+          # macOS (x64)
+          - { os: "macos-12", target: "x86_64-apple-darwin", cross: false }
+
+          # Windows (x64, x86)
+          - {
+              os: "windows-2019",
+              target: "x86_64-pc-windows-msvc",
+              cross: false,
+            }
+          - { os: "windows-2019", target: "i686-pc-windows-msvc", cross: false }
+          - {
+              os: "windows-2019",
+              target: "x86_64-pc-windows-gnu",
+              cross: false,
+            }
+
+          # ======= Unsupported targets =======
+          # armv7
+          - {
+              os: "ubuntu-20.04",
+              target: "armv7-unknown-linux-gnueabihf",
+              cross: true,
+            }
+          - {
+              os: "ubuntu-20.04",
+              target: "armv7-unknown-linux-musleabihf",
+              cross: true,
+            }
+
+          # PowerPC 64 LE
+          - {
+              os: "ubuntu-20.04",
+              target: "powerpc64le-unknown-linux-gnu",
+              cross: true,
+            }
+
+          # Risc-V 64gc
+          - {
+              os: "ubuntu-20.04",
+              target: "riscv64gc-unknown-linux-gnu",
+              cross: true,
+            }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Set up Rust toolchain
+        if: matrix.info.container == ''
+        uses: dtolnay/rust-toolchain@ba37adf8f94a7d9affce79bd3baff1b9e3189c33 # https://github.com/dtolnay/rust-toolchain/commit/ba37adf8f94a7d9affce79bd3baff1b9e3189c33
+        with:
+          toolchain: stable
+          target: ${{ matrix.info.target }}
+
+      - name: Set up Rust toolchain (non-GitHub container)
+        if: matrix.info.container != ''
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs --output rustup.sh
+          sh rustup.sh --default-toolchain stable -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build
+        uses: ClementTsang/cargo-action@v0.0.3
+        env:
+          BTM_GENERATE: true
+          BTM_BUILD_RELEASE_CALLER: ${{ inputs.caller }}
+        with:
+          command: build
+          args: --release --verbose --locked --target=${{ matrix.info.target }} --features deploy
+          use-cross: ${{ matrix.info.cross }}
+          cross-version: 0.2.4
+
+      - name: Move automatically generated completion/manpage
+        shell: bash
+        run: |
+          mv "$COMPLETION_DIR" completion
+          mv "$MANPAGE_DIR" manpage
+
+      - name: Bundle release and completion (Windows)
+        if: matrix.info.os == 'windows-2019'
+        shell: bash
+        run: |
+          cp target/${{ matrix.info.target }}/release/btm.exe btm.exe
+          7z a cf_speedtest_${{ matrix.info.target }}.zip "btm.exe"
+          7z a cf_speedtest_${{ matrix.info.target }}.zip "completion"
+          echo "ASSET=cf_speedtest_${{ matrix.info.target }}.zip" >> $GITHUB_ENV
+
+      - name: Bundle release and completion (Linux and macOS)
+        if: matrix.info.os != 'windows-2019'
+        shell: bash
+        run: |
+          cp target/${{ matrix.info.target }}/release/btm ./btm
+          tar -czvf cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz btm completion
+          echo "ASSET=cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz" >> $GITHUB_ENV
+
+      - name: Create release directory for artifact, move file
+        shell: bash
+        run: |
+          mkdir release
+          mv ${{ env.ASSET }} release/
+
+      - name: Compress completion files (Linux x86-64 GNU)
+        if: matrix.info.target == 'x86_64-unknown-linux-gnu' && matrix.info.container == ''
+        shell: bash
+        run: |
+          tar -C ./completion -czvf completion.tar.gz .
+          mv completion.tar.gz release/
+
+      - name: Compress manpage files (Linux x86-64 GNU)
+        if: matrix.info.target == 'x86_64-unknown-linux-gnu' && matrix.info.container == ''
+        shell: bash
+        run: |
+          gzip ./manpage/btm.1
+          tar -C ./manpage -czvf manpage.tar.gz .
+          mv manpage.tar.gz release/
+
+      - name: Save release as artifact
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
+        with:
+          retention-days: 3
+          name: release
+          path: release
+
+  build-msi:
+    name: "Build MSI installer"
+    runs-on: "windows-2019"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Install Net-Framework-Core
+        shell: powershell
+        run: Install-WindowsFeature Net-Framework-Core
+
+      - name: Install wixtoolset
+        uses: crazy-max/ghaction-chocolatey@90deb87d9fbf0bb2f022b91e3bf11b4441cddda5 # 2.1.0
+        with:
+          args: install -y wixtoolset
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@ba37adf8f94a7d9affce79bd3baff1b9e3189c33 # https://github.com/dtolnay/rust-toolchain/commit/ba37adf8f94a7d9affce79bd3baff1b9e3189c33
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Build MSI file
+        shell: powershell
+        env:
+          BTM_GENERATE: ""
+        run: |
+          cargo install cargo-wix --version 0.3.1 --locked
+          cargo wix init
+          cargo wix
+
+      - name: Create release directory for artifact, move files
+        shell: bash
+        run: |
+          mkdir release
+          mv cf_speedtest_x86_64_installer.msi release/
+
+      - name: Save release as artifact
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
+        with:
+          retention-days: 3
+          name: release
+          path: release
+
+  build-cirrus:
+    name: "Build using Cirrus CI"
+    runs-on: "ubuntu-latest"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Create release directory
+        run: |
+          mkdir -p release
+
+      - name: Execute Cirrus CI build script
+        env:
+          CIRRUS_KEY: ${{ secrets.CIRRUS_TOKEN }}
+        run: |
+          if [[ "${{ github.ref_type }}" == "branch" ]]; then
+            BRANCH="${{ github.ref_name }}";
+          else
+            raw=$(git branch -r --contains '${{ github.ref_name }}');
+            BRANCH=${raw##*/};
+          fi
+          python ./scripts/cirrus/build.py "$BRANCH" "release/" "${{ inputs.caller }}"
+
+      - name: Save release as artifact
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
+        with:
+          retention-days: 3
+          name: release
+          path: release
+
+  build-deb:
+    name: "Build Debian installers"
+    runs-on: "ubuntu-20.04"
+    strategy:
+      fail-fast: false
+      matrix:
+        info:
+          - { target: "x86_64-unknown-linux-gnu", cross: false, dpkg: amd64 }
+          - {
+              target: "aarch64-unknown-linux-gnu",
+              cross: true,
+              dpkg: arm64,
+              container: "ghcr.io/clementtsang/cargo-deb-aarch64-unknown-linux-gnu",
+            }
+          - {
+              target: "armv7-unknown-linux-gnueabihf",
+              cross: true,
+              dpkg: armhf,
+              container: "ghcr.io/clementtsang/cargo-deb-armv7-unknown-linux-gnueabihf",
+            }
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@ba37adf8f94a7d9affce79bd3baff1b9e3189c33 # https://github.com/dtolnay/rust-toolchain/commit/ba37adf8f94a7d9affce79bd3baff1b9e3189c33
+        with:
+          toolchain: stable
+          target: ${{ matrix.info.target }}
+
+      # TODO: Could I use the previous jobs to skip this call?
+      - name: Build
+        uses: ClementTsang/cargo-action@v0.0.3
+        env:
+          BTM_GENERATE: true
+          BTM_BUILD_RELEASE_CALLER: ${{ inputs.caller }}
+        with:
+          command: build
+          args: --release --locked --verbose --features deploy --target ${{ matrix.info.target }}
+          use-cross: ${{ matrix.info.cross }}
+          cross-version: 0.2.4
+
+      - name: Move automatically generated completion/manpage
+        shell: bash
+        run: |
+          mv "$COMPLETION_DIR" completion
+          mv "$MANPAGE_DIR" manpage
+
+      - name: Zip manpage
+        run: |
+          gzip ./manpage/btm.1
+
+      - name: Build Debian release (x86-64)
+        if: matrix.info.cross == false
+        env:
+          BTM_GENERATE: true
+        run: |
+          cargo install cargo-deb --version 1.41.3 --locked
+          cargo deb --no-build --target ${{ matrix.info.target }}
+          cp ./target/${{ matrix.info.target }}/debian/cf_speedtest_*.deb .
+
+      - name: Build Debian release (ARM)
+        if: matrix.info.cross == true
+        env:
+          BTM_GENERATE: true
+        run: |
+          docker pull ${{ matrix.info.container }}
+          docker run -t --rm --mount type=bind,source="$(pwd)",target=/volume ${{ matrix.info.container }} "--no-build --variant ${{ matrix.info.dpkg }} --target ${{ matrix.info.target }}" "/volume"
+          cp ./target/${{ matrix.info.target }}/debian/cf_speedtest-*.deb .
+          TMP_NAME=$(find cf_speedtest-*.deb)
+          VERSION=${{ matrix.info.dpkg }}
+          mv $TMP_NAME $(echo $TMP_NAME | sed "s/-$VERSION//")
+
+      - name: Verify Debian release
+        id: verify
+        run: |
+          DEB_FILE=$(find cf_speedtest_*.deb)
+          dpkg -I $DEB_FILE
+          dpkg -I $DEB_FILE | grep ${{ matrix.info.dpkg }} && echo "Found correct architecture"
+          echo "DEB_FILE=$DEB_FILE" >> $GITHUB_OUTPUT
+
+      - name: Delete generated Debian folder
+        run: |
+          sudo chown $USER ./target/${{ matrix.info.target }}/debian/ 2>/dev/null || true
+          rm -r ./target/${{ matrix.info.target }}/debian/
+
+      - name: Create release directory for artifact, move file
+        shell: bash
+        run: |
+          mkdir release
+          mv ${{ steps.verify.outputs.DEB_FILE }} release/
+
+      - name: Save release as artifact
+        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
+        with:
+          retention-days: 3
+          name: release
+          path: release

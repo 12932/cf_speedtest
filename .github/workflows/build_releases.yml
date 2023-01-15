@@ -1,10 +1,6 @@
 # Builds the following releases:
 # - Binary releases
 # - Debian releases (.deb)
-# - MSI installer for Windows (.msi)
-# - Cirrus CI binaries
-#   - FreeBSD (x86_64)
-#   - macOS (aarch64)
 
 name: "build releases"
 
@@ -161,8 +157,8 @@ jobs:
         if: matrix.info.os == 'windows-2019'
         shell: bash
         run: |
-          cp target/${{ matrix.info.target }}/release/btm.exe btm.exe
-          7z a cf_speedtest_${{ matrix.info.target }}.zip "btm.exe"
+          cp target/${{ matrix.info.target }}/release/cf_speedtest.exe cf_speedtest.exe
+          7z a cf_speedtest_${{ matrix.info.target }}.zip "cf_speedtest.exe"
           7z a cf_speedtest_${{ matrix.info.target }}.zip "completion"
           echo "ASSET=cf_speedtest_${{ matrix.info.target }}.zip" >> $GITHUB_ENV
 
@@ -170,8 +166,8 @@ jobs:
         if: matrix.info.os != 'windows-2019'
         shell: bash
         run: |
-          cp target/${{ matrix.info.target }}/release/btm ./btm
-          tar -czvf cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz btm completion
+          cp target/${{ matrix.info.target }}/release/cf_speedtest.exe ./cf_speedtest.exe
+          tar -czvf cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz cf_speedtest.exe completion
           echo "ASSET=cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz" >> $GITHUB_ENV
 
       - name: Create release directory for artifact, move file
@@ -191,87 +187,9 @@ jobs:
         if: matrix.info.target == 'x86_64-unknown-linux-gnu' && matrix.info.container == ''
         shell: bash
         run: |
-          gzip ./manpage/btm.1
+          gzip ./manpage/cf_speedtest.exe.1
           tar -C ./manpage -czvf manpage.tar.gz .
           mv manpage.tar.gz release/
-
-      - name: Save release as artifact
-        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
-        with:
-          retention-days: 3
-          name: release
-          path: release
-
-  build-msi:
-    name: "Build MSI installer"
-    runs-on: "windows-2019"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 1
-
-      - name: Install Net-Framework-Core
-        shell: powershell
-        run: Install-WindowsFeature Net-Framework-Core
-
-      - name: Install wixtoolset
-        uses: crazy-max/ghaction-chocolatey@90deb87d9fbf0bb2f022b91e3bf11b4441cddda5 # 2.1.0
-        with:
-          args: install -y wixtoolset
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@ba37adf8f94a7d9affce79bd3baff1b9e3189c33 # https://github.com/dtolnay/rust-toolchain/commit/ba37adf8f94a7d9affce79bd3baff1b9e3189c33
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-
-      - name: Build MSI file
-        shell: powershell
-        env:
-          BTM_GENERATE: ""
-        run: |
-          cargo install cargo-wix --version 0.3.1 --locked
-          cargo wix init
-          cargo wix
-
-      - name: Create release directory for artifact, move files
-        shell: bash
-        run: |
-          mkdir release
-          mv cf_speedtest_x86_64_installer.msi release/
-
-      - name: Save release as artifact
-        uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
-        with:
-          retention-days: 3
-          name: release
-          path: release
-
-  build-cirrus:
-    name: "Build using Cirrus CI"
-    runs-on: "ubuntu-latest"
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Create release directory
-        run: |
-          mkdir -p release
-
-      - name: Execute Cirrus CI build script
-        env:
-          CIRRUS_KEY: ${{ secrets.CIRRUS_TOKEN }}
-        run: |
-          if [[ "${{ github.ref_type }}" == "branch" ]]; then
-            BRANCH="${{ github.ref_name }}";
-          else
-            raw=$(git branch -r --contains '${{ github.ref_name }}');
-            BRANCH=${raw##*/};
-          fi
-          python ./scripts/cirrus/build.py "$BRANCH" "release/" "${{ inputs.caller }}"
 
       - name: Save release as artifact
         uses: actions/upload-artifact@83fd05a356d7e2593de66fc9913b3002723633cb # v3.1.1
@@ -332,7 +250,7 @@ jobs:
 
       - name: Zip manpage
         run: |
-          gzip ./manpage/btm.1
+          gzip ./manpage/cf_speedtest.exe.1
 
       - name: Build Debian release (x86-64)
         if: matrix.info.cross == false

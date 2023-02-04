@@ -1,0 +1,84 @@
+# Creates nightly deployment builds for main targets. Note this does not cover package distribution channels,
+# such as choco.
+
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      isMock:
+        description: "Replace with any word other than 'mock' to trigger a non-mock run."
+        default: "mock"
+        required: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+
+jobs:
+  # TODO: Add a pre-job check to skip if no change; may want to add something to check if there is a new rust version/week limit of skips?
+
+  initialize-job:
+    name: initialize-job
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if mock
+        run: |
+          echo "${{ github.event.inputs.isMock }}";
+          if [[ -z "${{ github.event.inputs.isMock }}" ]]; then
+            echo "This is a scheduled nightly run."
+          elif [[ "${{ github.event.inputs.isMock }}" == "mock" ]]; then
+            echo "This is a mock run."
+          else
+            echo "This is NOT a mock run. Watch for the generated files!"
+          fi
+
+  build-release:
+    needs: [initialize-job]
+    uses: ./.github/workflows/build_releases.yml
+    with:
+      caller: "nightly"
+    secrets: inherit
+
+  upload-release:
+    name: upload-release
+    runs-on: ubuntu-latest
+    needs: [build-release]
+    steps:
+      - name: Get release artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release
+          path: release
+
+      - name: Print out all release files
+        run: |
+          echo "Generated $(ls ./release | wc -l) files:"
+          du -h -d 0 ./release/*
+
+      - name: Delete tag and release
+        uses: ClementTsang/delete-tag-and-release@v0.3.1
+        if: github.event.inputs.isMock != 'mock'
+        with:
+          delete_release: true
+          tag_name: nightly
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sleep for a few seconds to prevent timing issues between the deletion and creation of the release
+        run: sleep 10
+        if: github.event.inputs.isMock != 'mock'
+
+      - name: Upload all saved release files if not mock
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # 0.1.15
+        if: github.event.inputs.isMock != 'mock'
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prerelease: true
+          tag_name: "nightly"
+          draft: false
+          fail_on_unmatched_files: true
+          files: |
+            ./release/*

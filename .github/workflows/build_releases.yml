@@ -116,7 +116,7 @@ jobs:
             }
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: asottile/workflows/.github/actions/fast-checkout@v1.4.0
         with:
           fetch-depth: 1
 
@@ -210,7 +210,7 @@ jobs:
             }
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: asottile/workflows/.github/actions/fast-checkout@v1.4.0
         with:
           fetch-depth: 1
 

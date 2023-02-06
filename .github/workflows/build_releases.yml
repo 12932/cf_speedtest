@@ -149,7 +149,7 @@ jobs:
       - name: Move automatically generated completion
         shell: bash
         run: |
-          mv "$COMPLETION_DIR" completion
+          echo "$COMPLETION_DIR"
 
       - name: Bundle release and completion (Windows)
         if: matrix.info.os == 'windows-2019'

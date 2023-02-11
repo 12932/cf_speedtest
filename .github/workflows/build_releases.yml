@@ -164,10 +164,10 @@ jobs:
         if: matrix.info.os != 'windows-2019'
         shell: bash
         run: |
-          cp target/${{ matrix.info.target }}/release/cf_speedtest.exe ./cf_speedtest.exe
-          tar -czvf cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz cf_speedtest.exe completion
-          echo "ASSET=cf_speedtest_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz" >> $GITHUB_ENV
-
+          cp target/${{ matrix.info.target }}/release/cf_speedtest ./cf_speedtest
+          tar -czvf bottom_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz cf_speedtest completion
+          echo "ASSET=bottom_${{ matrix.info.target }}${{ matrix.info.suffix }}.tar.gz" >> $GITHUB_ENV
+          
       - name: Create release directory for artifact, move file
         shell: bash
         run: |

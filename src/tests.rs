@@ -22,8 +22,7 @@ fn test_download() {
             &total_downloaded_bytes_counter,
             &current_down_clone,
             &exit_signal_clone,
-        )
-        ;
+        ).ok();
     });
 
     for _ in 0..10 {
@@ -50,7 +49,7 @@ fn test_upload() {
     let exit_signal_clone = Arc::clone(&exit_signal);
 
     let _handle = std::thread::spawn(move || {
-        upload_test(1, &total_bytes_uploaded_counter, &upload_bytes_clone, &exit_signal_clone);
+        upload_test(1, &total_bytes_uploaded_counter, &upload_bytes_clone, &exit_signal_clone).ok();
     });
 
     for _ in 0..10 {

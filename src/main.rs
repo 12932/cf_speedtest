@@ -464,22 +464,12 @@ F: FnMut(usize, &Arc<AtomicUsize>, &Arc<AtomicUsize>, &Arc<AtomicBool>)
 
 	thread_handles
 }
+fn run_download_test(config: &UserArgs)
+{
+	let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+	let exit_signal = Arc::new(AtomicBool::new(false));
 
-
-fn main() {
-    let config: UserArgs = argh::from_env();
-	config.validate().expect("Invalid arguments");
-
-    print_test_preamble();
-
-    let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-    let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-
-    let exit_signal = Arc::new(AtomicBool::new(false));
-
-    if !config.upload_only
-    {
-		exit_signal.store(false, Ordering::SeqCst);
+	exit_signal.store(false, Ordering::SeqCst);
 		let current_down_speed = Arc::new(AtomicUsize::new(0));
         let down_deadline = get_secs_since_unix_epoch() + 12;
        
@@ -531,65 +521,82 @@ fn main() {
         for handle in down_handles {
             handle.join().expect("Couldn't join download thread");
         }
-    }
+}
 
+fn run_upload_test(config: &UserArgs)
+{
+	let exit_signal = Arc::new(AtomicBool::new(false));
+	let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+	let current_up_speed = Arc::new(AtomicUsize::new(0));
+	// re-use exit_signal for upload tests
+	exit_signal.store(false, Ordering::SeqCst);
+
+	println!("Starting upload tests...");
+	let up_deadline = get_secs_since_unix_epoch() + 12;
+	
+	let target_test = Arc::new(Mutex::new(upload_test));
+	let up_handles = spawn_test_threads(
+		config.upload_thread_count, 
+		target_test, 
+		config.bytes_to_upload,
+		&total_uploaded_bytes_counter, 
+		&current_up_speed, 
+		&exit_signal
+	);
+
+	let mut last_bytes_up = 0;
+	let mut up_measurements = vec![];
+	total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
+	// print total bytes downloaded in a loop
+	loop {
+		let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
+
+		let bytes_up_diff = bytes_up - last_bytes_up;
+		up_measurements.push(bytes_up_diff);
+
+		let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
+
+		println!(
+			"Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
+			16,
+			16,
+			byte_speed = speed_values.0,
+			bit_speed = speed_values.1
+		);
+
+		io::stdout().flush().unwrap();
+		std::thread::sleep(std::time::Duration::from_millis(1000));
+		last_bytes_up = bytes_up;
+
+		// exit if we have passed the deadline
+		if get_secs_since_unix_epoch() > up_deadline {
+			exit_signal.store(true, Ordering::SeqCst);
+			break;
+		}
+	}
+
+	// wait for upload threads to finish
+	println!("Waiting for upload threads to finish...");
+	for handle in up_handles {
+		handle.join().expect("Couldn't join upload thread");
+	}
+
+}
+
+fn main() {
+    let config: UserArgs = argh::from_env();
+	config.validate().expect("Invalid arguments");
+
+    print_test_preamble();
+
+    if !config.upload_only
+    {
+		run_download_test(&config);
+    }
 
     if !config.download_only
     {
-		let current_up_speed = Arc::new(AtomicUsize::new(0));
-        // re-use exit_signal for upload tests
-        exit_signal.store(false, Ordering::SeqCst);
-
-        println!("Starting upload tests...");
-        let up_deadline = get_secs_since_unix_epoch() + 12;
-		
-		let target_test = Arc::new(Mutex::new(upload_test));
-		let up_handles = spawn_test_threads(
-			config.upload_thread_count, 
-			target_test, 
-			config.bytes_to_upload,
-			&total_uploaded_bytes_counter, 
-			&current_up_speed, 
-			&exit_signal
-		);
-
-        let mut last_bytes_up = 0;
-        let mut up_measurements = vec![];
-        total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
-        // print total bytes downloaded in a loop
-        loop {
-            let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
-
-            let bytes_up_diff = bytes_up - last_bytes_up;
-            up_measurements.push(bytes_up_diff);
-
-            let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
-
-            println!(
-                "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
-                16,
-                16,
-                byte_speed = speed_values.0,
-                bit_speed = speed_values.1
-            );
-
-			io::stdout().flush().unwrap();
-			std::thread::sleep(std::time::Duration::from_millis(1000));
-            last_bytes_up = bytes_up;
-
-            // exit if we have passed the deadline
-            if get_secs_since_unix_epoch() > up_deadline {
-                exit_signal.store(true, Ordering::SeqCst);
-                break;
-            }
-        }
-
-        // wait for upload threads to finish
-        println!("Waiting for upload threads to finish...");
-        for handle in up_handles {
-            handle.join().expect("Couldn't join upload thread");
-        }
-
+		run_upload_test(&config);
     }
 
     println!("Work complete!");

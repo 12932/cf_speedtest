@@ -1,6 +1,10 @@
 # Builds the following releases:
 # - Binary releases
 # - Debian releases (.deb)
+# - MSI installer for Windows (.msi)
+# - Cirrus CI binaries
+#   - FreeBSD (x86_64)
+#   - macOS (aarch64)
 
 name: "build releases"
 
@@ -147,6 +151,20 @@ jobs:
           use-cross: ${{ matrix.info.cross }}
           cross-version: 0.2.5
 
+      - name: Move automatically generated completion
+        shell: bash
+        run: |
+          mv "$COMPLETION_DIR" completion
+
+      - name: Bundle release and completion (Windows)
+        if: matrix.info.os == 'windows-2019'
+        shell: bash
+        run: |
+          cp target/${{ matrix.info.target }}/release/cf_speedtest.exe cf_speedtest.exe
+          7z a cf_speedtest_${{ matrix.info.target }}.zip "cf_speedtest.exe"
+          7z a cf_speedtest_${{ matrix.info.target }}.zip "completion"
+          echo "ASSET=cf_speedtest_${{ matrix.info.target }}.zip" >> $GITHUB_ENV
+
       - name: Bundle release and completion (Linux and macOS)
         if: matrix.info.os != 'windows-2019'
         shell: bash
@@ -167,6 +185,13 @@ jobs:
         run: |
           tar -C ./completion -czvf completion.tar.gz .
           mv completion.tar.gz release/
+
+      - name: Save release as artifact
+        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        with:
+          retention-days: 3
+          name: release
+          path: release
 
       - name: Save release as artifact
         uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
@@ -232,15 +257,10 @@ jobs:
           use-cross: ${{ matrix.info.cross }}
           cross-version: 0.2.5
 
-      - name: Move automatically generated completion/manpage
+      - name: Move automatically generated completion
         shell: bash
         run: |
           mv "$COMPLETION_DIR" completion
-          mv "$MANPAGE_DIR" manpage
-
-      - name: Zip manpage
-        run: |
-          gzip ./manpage/cf_speedtest.1
 
       - name: Build Debian release (x86-64)
         if: matrix.info.cross == false

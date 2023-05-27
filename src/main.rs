@@ -1,15 +1,15 @@
 use argh::FromArgs;
+use rustls::OwnedTrustAnchor;
+use rustls::RootCertStore;
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
-use std::thread::JoinHandle;
-use rustls::RootCertStore;
-use rustls::OwnedTrustAnchor;
 
 #[cfg(test)]
 mod tests;
@@ -67,20 +67,20 @@ struct UserArgs {
     #[argh(option, default = "4")]
     upload_thread_count: usize,
 
-	/// when set, only run the download test
-	#[argh(switch, short = 'd')]
+    /// when set, only run the download test
+    #[argh(switch, short = 'd')]
     download_only: bool,
 
-	/// when set, only run the upload test
+    /// when set, only run the upload test
     #[argh(switch, short = 'u')]
     upload_only: bool,
 
-	/// the amount of bytes to download in a single request (default 50MB)
-	#[argh(option, default = "50 * 1024 * 1024")]
+    /// the amount of bytes to download in a single request (default 50MB)
+    #[argh(option, default = "50 * 1024 * 1024")]
     bytes_to_download: usize,
 
     /// the amount of bytes to upload in a single request (default 50MB)
-	#[argh(option, default = "50 * 1024 * 1024")]
+    #[argh(option, default = "50 * 1024 * 1024")]
     bytes_to_upload: usize,
 }
 
@@ -97,17 +97,18 @@ impl UserArgs {
     }
 }
 
-
 fn get_secs_since_unix_epoch() -> usize {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as usize
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize
 }
 
-
 /* Given n bytes, return
- 	a: unit of measurement in sensible form of bytes
- 	b: unit of measurement in sensible form of bits
+     a: unit of measurement in sensible form of bytes
+     b: unit of measurement in sensible form of bits
  i.e 12939428 -> (12.34 MB, 98.76 Mb)
- 		 814811 -> (795.8 KB, 6.36 Mb)
+          814811 -> (795.8 KB, 6.36 Mb)
  basically, the BYTE value should always be greater than 1
  and never more than 1024. the bit value should just be calculated off
  the byte value
@@ -137,7 +138,8 @@ fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
             "G" => "t",
             "T" => "p",
             _ => "?",
-        }.to_string();
+        }
+        .to_string();
     }
 
     (
@@ -145,7 +147,6 @@ fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
         format!("{:.2} {}b", bits, bit_unit),
     )
 }
-
 
 fn get_appropriate_buff_size(speed: usize) -> u64 {
     match speed {
@@ -224,26 +225,20 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
 fn upload_test(
     bytes: usize,
     total_up_bytes_counter: &Arc<AtomicUsize>,
-	_current_speed: &Arc<AtomicUsize>,
+    _current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-
     let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(
-        webpki_roots::TLS_SERVER_ROOTS
-            .0
-            .iter()
-            .map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }),
-    );
+    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
 
     let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
-	
+
     let tls_config = rustls::ClientConfig::builder()
         .with_cipher_suites(&my_slick_cipher_suites)
         .with_safe_default_kx_groups()
@@ -251,7 +246,7 @@ fn upload_test(
         .unwrap()
         .with_root_certificates(root_store)
         .with_no_client_auth();
-    
+
     let my_agent = ureq::AgentBuilder::new()
         .tls_config(Arc::new(tls_config))
         .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
@@ -296,21 +291,16 @@ fn download_test(
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(
-        webpki_roots::TLS_SERVER_ROOTS
-            .0
-            .iter()
-            .map(|ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            }),
-    );
+    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            ta.subject,
+            ta.spki,
+            ta.name_constraints,
+        )
+    }));
 
     let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
-	
+
     let tls_config = rustls::ClientConfig::builder()
         .with_cipher_suites(&my_slick_cipher_suites)
         .with_safe_default_kx_groups()
@@ -318,7 +308,7 @@ fn download_test(
         .unwrap()
         .with_root_certificates(root_store)
         .with_no_client_auth();
-    
+
     let my_agent = ureq::AgentBuilder::new()
         .tls_config(Arc::new(tls_config))
         .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
@@ -411,21 +401,28 @@ fn print_test_preamble() {
 }
 
 fn spawn_test_threads<F>(
-	threads_to_spawn: usize,
-	target_test:  Arc<Mutex<F>>,
-	bytes_to_request: usize,
-	total_bytes_counter: &Arc<AtomicUsize>, 
-	current_speed: &Arc<AtomicUsize>, 
-	exit_signal: &Arc<AtomicBool>) -> Vec<JoinHandle<()>> 
+    threads_to_spawn: usize,
+    target_test: Arc<Mutex<F>>,
+    bytes_to_request: usize,
+    total_bytes_counter: &Arc<AtomicUsize>,
+    current_speed: &Arc<AtomicUsize>,
+    exit_signal: &Arc<AtomicBool>,
+) -> Vec<JoinHandle<()>>
 where
-F: FnMut(usize, &Arc<AtomicUsize>, &Arc<AtomicUsize>, &Arc<AtomicBool>) 
-	-> std::result::Result<(), Box<dyn std::error::Error>> + Send + 'static,
+    F: FnMut(
+            usize,
+            &Arc<AtomicUsize>,
+            &Arc<AtomicUsize>,
+            &Arc<AtomicBool>,
+        ) -> std::result::Result<(), Box<dyn std::error::Error>>
+        + Send
+        + 'static,
 {
-	let mut thread_handles = vec![];
+    let mut thread_handles = vec![];
 
-	for i in 0..threads_to_spawn {
-		let target_test_clone = Arc::clone(&target_test);
-		let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
+    for i in 0..threads_to_spawn {
+        let target_test_clone = Arc::clone(&target_test);
+        let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
         let handle = std::thread::spawn(move || {
@@ -438,9 +435,9 @@ F: FnMut(usize, &Arc<AtomicUsize>, &Arc<AtomicUsize>, &Arc<AtomicBool>)
             }
 
             loop {
-				let mut target_fn = target_test_clone.lock().unwrap();
+                let mut target_fn = target_test_clone.lock().unwrap();
                 match target_fn(
-					bytes_to_request,
+                    bytes_to_request,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
                     &exit_signal_clone,
@@ -458,145 +455,140 @@ F: FnMut(usize, &Arc<AtomicUsize>, &Arc<AtomicUsize>, &Arc<AtomicBool>)
                     return;
                 }
             }
-		});
-		thread_handles.push(handle);
+        });
+        thread_handles.push(handle);
     }
 
-	thread_handles
+    thread_handles
 }
-fn run_download_test(config: &UserArgs)
-{
-	let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-	let exit_signal = Arc::new(AtomicBool::new(false));
+fn run_download_test(config: &UserArgs) {
+    let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+    let exit_signal = Arc::new(AtomicBool::new(false));
 
-	exit_signal.store(false, Ordering::SeqCst);
-		let current_down_speed = Arc::new(AtomicUsize::new(0));
-        let down_deadline = get_secs_since_unix_epoch() + 12;
-       
-		let target_test = Arc::new(Mutex::new(download_test));
-        let down_handles = spawn_test_threads(
-			config.download_thread_count, 
-			target_test, 
-			config.bytes_to_download,
-			&total_downloaded_bytes_counter, 
-			&current_down_speed, 
-			&exit_signal
-		);
+    exit_signal.store(false, Ordering::SeqCst);
+    let current_down_speed = Arc::new(AtomicUsize::new(0));
+    let down_deadline = get_secs_since_unix_epoch() + 12;
 
-        let mut last_bytes_down = 0;
-        total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
-        let mut down_measurements = vec![];
-        // print download speed
-        loop {
-            let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
-            let bytes_down_diff = bytes_down - last_bytes_down;
+    let target_test = Arc::new(Mutex::new(download_test));
+    let down_handles = spawn_test_threads(
+        config.download_thread_count,
+        target_test,
+        config.bytes_to_download,
+        &total_downloaded_bytes_counter,
+        &current_down_speed,
+        &exit_signal,
+    );
 
-            // set current_down
-            current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
-            down_measurements.push(bytes_down_diff);
+    let mut last_bytes_down = 0;
+    total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
+    let mut down_measurements = vec![];
+    // print download speed
+    loop {
+        let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
+        let bytes_down_diff = bytes_down - last_bytes_down;
 
-            let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
-            // only print progress if we are before deadline
-            if get_secs_since_unix_epoch() < down_deadline {
-                println!(
-                    "Download: {byte_speed:>12.*}/s {bit_speed:>14.*}it/s",
-                    16,
-                    16,
-                    byte_speed = speed_values.0,
-                    bit_speed = speed_values.1
-                );
-            }
-            io::stdout().flush().unwrap();
-			std::thread::sleep(std::time::Duration::from_millis(1000));
-            last_bytes_down = bytes_down;
+        // set current_down
+        current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
+        down_measurements.push(bytes_down_diff);
 
-            // exit if we have passed the deadline
-            if get_secs_since_unix_epoch() > down_deadline {
-                exit_signal.store(true, Ordering::SeqCst);
-                break;
-            }
+        let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
+        // only print progress if we are before deadline
+        if get_secs_since_unix_epoch() < down_deadline {
+            println!(
+                "Download: {byte_speed:>12.*}/s {bit_speed:>14.*}it/s",
+                16,
+                16,
+                byte_speed = speed_values.0,
+                bit_speed = speed_values.1
+            );
         }
+        io::stdout().flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        last_bytes_down = bytes_down;
 
-        println!("Waiting for download threads to finish...");
-        for handle in down_handles {
-            handle.join().expect("Couldn't join download thread");
+        // exit if we have passed the deadline
+        if get_secs_since_unix_epoch() > down_deadline {
+            exit_signal.store(true, Ordering::SeqCst);
+            break;
         }
+    }
+
+    println!("Waiting for download threads to finish...");
+    for handle in down_handles {
+        handle.join().expect("Couldn't join download thread");
+    }
 }
 
-fn run_upload_test(config: &UserArgs)
-{
-	let exit_signal = Arc::new(AtomicBool::new(false));
-	let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-	let current_up_speed = Arc::new(AtomicUsize::new(0));
-	// re-use exit_signal for upload tests
-	exit_signal.store(false, Ordering::SeqCst);
+fn run_upload_test(config: &UserArgs) {
+    let exit_signal = Arc::new(AtomicBool::new(false));
+    let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+    let current_up_speed = Arc::new(AtomicUsize::new(0));
+    // re-use exit_signal for upload tests
+    exit_signal.store(false, Ordering::SeqCst);
 
-	println!("Starting upload tests...");
-	let up_deadline = get_secs_since_unix_epoch() + 12;
-	
-	let target_test = Arc::new(Mutex::new(upload_test));
-	let up_handles = spawn_test_threads(
-		config.upload_thread_count, 
-		target_test, 
-		config.bytes_to_upload,
-		&total_uploaded_bytes_counter, 
-		&current_up_speed, 
-		&exit_signal
-	);
+    println!("Starting upload tests...");
+    let up_deadline = get_secs_since_unix_epoch() + 12;
 
-	let mut last_bytes_up = 0;
-	let mut up_measurements = vec![];
-	total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
-	// print total bytes downloaded in a loop
-	loop {
-		let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
+    let target_test = Arc::new(Mutex::new(upload_test));
+    let up_handles = spawn_test_threads(
+        config.upload_thread_count,
+        target_test,
+        config.bytes_to_upload,
+        &total_uploaded_bytes_counter,
+        &current_up_speed,
+        &exit_signal,
+    );
 
-		let bytes_up_diff = bytes_up - last_bytes_up;
-		up_measurements.push(bytes_up_diff);
+    let mut last_bytes_up = 0;
+    let mut up_measurements = vec![];
+    total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
+    // print total bytes downloaded in a loop
+    loop {
+        let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
 
-		let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
+        let bytes_up_diff = bytes_up - last_bytes_up;
+        up_measurements.push(bytes_up_diff);
 
-		println!(
-			"Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
-			16,
-			16,
-			byte_speed = speed_values.0,
-			bit_speed = speed_values.1
-		);
+        let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
 
-		io::stdout().flush().unwrap();
-		std::thread::sleep(std::time::Duration::from_millis(1000));
-		last_bytes_up = bytes_up;
+        println!(
+            "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
+            16,
+            16,
+            byte_speed = speed_values.0,
+            bit_speed = speed_values.1
+        );
 
-		// exit if we have passed the deadline
-		if get_secs_since_unix_epoch() > up_deadline {
-			exit_signal.store(true, Ordering::SeqCst);
-			break;
-		}
-	}
+        io::stdout().flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        last_bytes_up = bytes_up;
 
-	// wait for upload threads to finish
-	println!("Waiting for upload threads to finish...");
-	for handle in up_handles {
-		handle.join().expect("Couldn't join upload thread");
-	}
+        // exit if we have passed the deadline
+        if get_secs_since_unix_epoch() > up_deadline {
+            exit_signal.store(true, Ordering::SeqCst);
+            break;
+        }
+    }
 
+    // wait for upload threads to finish
+    println!("Waiting for upload threads to finish...");
+    for handle in up_handles {
+        handle.join().expect("Couldn't join upload thread");
+    }
 }
 
 fn main() {
     let config: UserArgs = argh::from_env();
-	config.validate().expect("Invalid arguments");
+    config.validate().expect("Invalid arguments");
 
     print_test_preamble();
 
-    if !config.upload_only
-    {
-		run_download_test(&config);
+    if !config.upload_only {
+        run_download_test(&config);
     }
 
-    if !config.download_only
-    {
-		run_upload_test(&config);
+    if !config.download_only {
+        run_upload_test(&config);
     }
 
     println!("Work complete!");

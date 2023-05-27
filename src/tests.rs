@@ -22,7 +22,8 @@ fn test_download() {
             &total_downloaded_bytes_counter,
             &current_down_clone,
             &exit_signal_clone,
-        ).ok();
+        )
+        .ok();
     });
 
     for _ in 0..10 {
@@ -49,7 +50,13 @@ fn test_upload() {
     let exit_signal_clone = Arc::clone(&exit_signal);
 
     let _handle = std::thread::spawn(move || {
-        upload_test(1, &total_bytes_uploaded_counter, &upload_bytes_clone, &exit_signal_clone).ok();
+        upload_test(
+            1,
+            &total_bytes_uploaded_counter,
+            &upload_bytes_clone,
+            &exit_signal_clone,
+        )
+        .ok();
     });
 
     for _ in 0..10 {
@@ -67,7 +74,6 @@ fn test_upload() {
 
 #[test]
 fn test_get_appropriate_byte_unit() {
-
     assert_eq!(
         get_appropriate_byte_unit(100),
         ("100.00 B".to_string(), "800.00 b".to_string())

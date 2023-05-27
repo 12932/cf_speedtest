@@ -19,6 +19,7 @@ $ cargo install cf_speedtest
 	- You don't have to use this, but it can achieve much faster speeds than browser speedtests
 
 ### TODO:
+- Use std::async or tokio instead of threads
 - Support for proxies (HTTP/SOCKS5) with and without authentication
 - Output results to csv?
 - Show a graph

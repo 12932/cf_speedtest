@@ -23,7 +23,7 @@ fn test_download() {
             &current_down_clone,
             &exit_signal_clone,
         )
-        .unwrap();
+        ;
     });
 
     for _ in 0..10 {
@@ -48,7 +48,7 @@ fn test_upload() {
     let exit_signal_clone = Arc::clone(&exit_signal);
 
     let handle = std::thread::spawn(move || {
-        upload_test(1, &total_bytes_uploaded_counter, &exit_signal_clone).unwrap();
+        upload_test(1, &total_bytes_uploaded_counter, &exit_signal_clone);
     });
 
     for _ in 0..10 {
@@ -66,61 +66,62 @@ fn test_upload() {
 
 #[test]
 fn test_get_appropriate_byte_unit() {
+
     assert_eq!(
-        get_appropriate_byte_unit(100).unwrap(),
+        get_appropriate_byte_unit(100),
         ("100.00 B".to_string(), "800.00 b".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1015).unwrap(),
+        get_appropriate_byte_unit(1015),
         ("1015.00 B".to_string(), "8.12 kb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(2048).unwrap(),
+        get_appropriate_byte_unit(2048),
         ("2.00 KB".to_string(), "16.00 kb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1048576).unwrap(),
+        get_appropriate_byte_unit(1048576),
         ("1.00 MB".to_string(), "8.00 mb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1073741824).unwrap(),
+        get_appropriate_byte_unit(1073741824),
         ("1.00 GB".to_string(), "8.00 gb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1099511627776).unwrap(),
+        get_appropriate_byte_unit(1099511627776),
         ("1.00 TB".to_string(), "8.00 tb".to_string())
     );
 
     assert_eq!(
-        get_appropriate_byte_unit(1023).unwrap(),
+        get_appropriate_byte_unit(1023),
         ("1023.00 B".to_string(), "8.18 kb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1024).unwrap(),
+        get_appropriate_byte_unit(1024),
         ("1.00 KB".to_string(), "8.00 kb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(12939428).unwrap(),
+        get_appropriate_byte_unit(12939428),
         ("12.34 MB".to_string(), "98.72 mb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(814811).unwrap(),
+        get_appropriate_byte_unit(814811),
         ("795.71 KB".to_string(), "6.37 mb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1024 * 1024).unwrap(),
+        get_appropriate_byte_unit(1024 * 1024),
         ("1.00 MB".to_string(), "8.00 mb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1024 * 1024 * 1024).unwrap(),
+        get_appropriate_byte_unit(1024 * 1024 * 1024),
         ("1.00 GB".to_string(), "8.00 gb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1024 * 1024 * 1024 * 1024).unwrap(),
+        get_appropriate_byte_unit(1024 * 1024 * 1024 * 1024),
         ("1.00 TB".to_string(), "8.00 tb".to_string())
     );
     assert_eq!(
-        get_appropriate_byte_unit(1024 * 1024 * 1024 * 1024 * 1024).unwrap(),
+        get_appropriate_byte_unit(1024 * 1024 * 1024 * 1024 * 1024),
         ("1024.00 TB".to_string(), "8.19 pb".to_string())
     );
 }

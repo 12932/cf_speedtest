@@ -6,6 +6,10 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
+use std::net::TcpStream;
+use std::thread::JoinHandle;
+use rustls::RootCertStore;
+use rustls::OwnedTrustAnchor;
 
 #[cfg(test)]
 mod tests;
@@ -19,7 +23,7 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.3.8)";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.3.9) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 
@@ -34,8 +38,8 @@ impl std::io::Read for UploadHelper {
         }
 
         // fill the buffer with 1s
-        for i in 0..buf.len() {
-            buf[i] = 1;
+        for byte in buf.iter_mut() {
+            *byte = 1;
         }
 
         self.byte_ctr.fetch_add(buf.len(), Ordering::SeqCst);
@@ -52,7 +56,7 @@ struct UploadHelper {
     exit_signal: Arc<AtomicBool>,
 }
 
-#[derive(FromArgs)]
+#[derive(FromArgs, Clone)]
 /// A speedtest CLI written in Rust
 struct UserArgs {
     /// how many download threads to use (default 4)
@@ -62,7 +66,37 @@ struct UserArgs {
     /// how many upload threads to use (default 4)
     #[argh(option, default = "4")]
     upload_threads: usize,
+
+	/// when set, only run the download test
+	#[argh(switch, short = 'd')]
+    download_only: bool,
+
+	/// when set, only run the upload test
+    #[argh(switch, short = 'u')]
+    upload_only: bool,
+
+	/// the amount of bytes to download in a single request (default 50MB)
+	#[argh(option, default = "50 * 1024 * 1024")]
+    bytes_to_download: usize,
+
+    /// the amount of bytes to upload in a single request (default 50MB)
+	#[argh(option, default = "50 * 1024 * 1024")]
+    bytes_to_upload: usize,
 }
+
+impl UserArgs {
+    fn validate(&self) -> Result<()> {
+        if self.download_only && self.upload_only {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot specify both --download-only and --upload-only. Please only specify one.",
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 
 fn get_secs_since_unix_epoch() -> usize {
     let start = SystemTime::now();
@@ -71,75 +105,49 @@ fn get_secs_since_unix_epoch() -> usize {
     since_the_epoch.as_secs() as usize
 }
 
-// Given n bytes, return
-// 	a: unit of measurement in sensible form of bytes
-// 	b: unit of measurement in sensible form of bits
-// i.e 12939428 -> (12.34 MB, 98.76 Mb)
-// 		 814811 -> (795.8 KB, 6.36 Mb)
-// basically, the BYTE value should always be greater than 1
-// and never more than 1024. the bit value should just be calculated off
-// the byte value
-fn get_appropriate_byte_unit(bytes: u64) -> Result<(String, String)> {
+/* Given n bytes, return
+ 	a: unit of measurement in sensible form of bytes
+ 	b: unit of measurement in sensible form of bits
+ i.e 12939428 -> (12.34 MB, 98.76 Mb)
+ 		 814811 -> (795.8 KB, 6.36 Mb)
+ basically, the BYTE value should always be greater than 1
+ and never more than 1024. the bit value should just be calculated off
+ the byte value
+*/
+fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
+    const UNITS: [&str; 5] = ["", "K", "M", "G", "T"];
     const KILOBYTE: f64 = 1024.0;
-    const MEGABYTE: f64 = KILOBYTE * KILOBYTE;
-    const GIGABYTE: f64 = MEGABYTE * KILOBYTE;
-    const TERABYTE: f64 = GIGABYTE * KILOBYTE;
 
     let mut bytes = bytes as f64;
-    let byte_unit: char;
-    let bit_unit: char;
-    let mut bits: f64;
+    let mut level = 0;
 
-    if bytes < 1024.0 {
-        byte_unit = '\0';
-    } else if bytes < MEGABYTE {
-        byte_unit = 'K';
+    while bytes >= KILOBYTE && level < UNITS.len() - 1 {
         bytes /= KILOBYTE;
-    } else if bytes < GIGABYTE {
-        byte_unit = 'M';
-        bytes /= MEGABYTE;
-    } else if bytes < TERABYTE {
-        byte_unit = 'G';
-        bytes /= GIGABYTE;
-    } else {
-        byte_unit = 'T';
-        bytes /= TERABYTE;
+        level += 1;
     }
 
-    bits = bytes * 8.;
-    // increment the bit_unit by 1
-    if bytes * 8. > 1000. {
+    let byte_unit = UNITS[level];
+    let mut bits = bytes * 8.0;
+    let mut bit_unit = byte_unit.to_ascii_lowercase();
+
+    if bits >= 1000.0 {
         bits /= 1000.0;
-        // increment the bit_unit by one metric
-        // i.e. k becomes m, m becomes g, g becomes t
         bit_unit = match byte_unit {
-            '\0' => 'k',
-            'B' => 'k',
-            'K' => 'm',
-            'M' => 'g',
-            'G' => 't',
-            'T' => 'p',
-
-            // I think it will be a long time before
-            // we get any faster
-            _ => '?',
-        };
-    } else {
-        // set bit unit to lowercase of byte unit
-        bit_unit = byte_unit.to_ascii_lowercase();
+            "" => "k",
+            "K" => "m",
+            "M" => "g",
+            "G" => "t",
+            "T" => "p",
+            _ => "?",
+        }.to_string();
     }
 
-    match (byte_unit, bit_unit) {
-        ('\0', '\0') => return Ok((format!("{bytes:.2} B"), format!("{bits:.2} b"))),
-        ('\0', _) => return Ok((format!("{bytes:.2} B"), format!("{bits:.2} {bit_unit}b"))),
-        _ => {
-            return Ok((
-                format!("{bytes:.2} {byte_unit}B"),
-                format!("{bits:.2} {bit_unit}b"),
-            ))
-        }
-    }
+    (
+        format!("{:.2} {}B", bytes, byte_unit),
+        format!("{:.2} {}b", bits, bit_unit),
+    )
 }
+
 
 fn get_appropriate_buff_size(speed: usize) -> u64 {
     match speed {
@@ -151,6 +159,7 @@ fn get_appropriate_buff_size(speed: usize) -> u64 {
         _ => 16384,
     }
 }
+
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
 // (they use Maxmind)
 fn get_our_ip_address_country() -> Result<String> {
@@ -179,7 +188,7 @@ fn get_download_server_http_latency() -> Result<std::time::Duration> {
 
     for _ in 0..8 {
         // if vec length 2 or greater and we've spent a lot of time
-        // exit early
+        // calculating latency, exit early
         if latency_vec.len() >= 2 && start.elapsed() > std::time::Duration::from_secs(1) {
             break;
         }
@@ -256,6 +265,72 @@ fn upload_test(
     }
 }
 
+fn upload_test_no_decrypt(
+    bytes: usize,
+    total_up_bytes_counter: &Arc<AtomicUsize>,
+    exit_signal: &Arc<AtomicBool>,
+) -> Result<()> {
+
+    let mut root_store = RootCertStore::empty();
+    root_store.add_server_trust_anchors(
+        webpki_roots::TLS_SERVER_ROOTS
+            .0
+            .iter()
+            .map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject,
+                    ta.spki,
+                    ta.name_constraints,
+                )
+            }),
+    );
+
+    let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
+	
+    let tls_config = rustls::ClientConfig::builder()
+        .with_cipher_suites(&my_slick_cipher_suites)
+        .with_safe_default_kx_groups()
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    
+    let my_agent = ureq::AgentBuilder::new()
+        .tls_config(Arc::new(tls_config))
+        .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+        .redirects(0)
+        .build();
+
+    loop {
+        let upload_helper = UploadHelper {
+            bytes_to_send: bytes,
+            byte_ctr: Arc::new(AtomicUsize::new(0)),
+            total_uploaded_counter: total_up_bytes_counter.clone(),
+            exit_signal: exit_signal.clone(),
+        };
+
+        let resp = match my_agent
+            .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
+            .set("Content-Type", "text/plain;charset=UTF-8")
+            .set("User-Agent", OUR_USER_AGENT)
+            .send(upload_helper)
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                eprintln!("Error in upload thread: {err}");
+                return Ok(());
+            }
+        };
+
+        // read the POST response body into the void if response is okay
+        let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
+
+        if exit_signal.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+    }
+}
+
 // download some bytes from cloudflare
 fn download_test(
     bytes: usize,
@@ -263,7 +338,32 @@ fn download_test(
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
+    let mut root_store = RootCertStore::empty();
+    root_store.add_server_trust_anchors(
+        webpki_roots::TLS_SERVER_ROOTS
+            .0
+            .iter()
+            .map(|ta| {
+                OwnedTrustAnchor::from_subject_spki_name_constraints(
+                    ta.subject,
+                    ta.spki,
+                    ta.name_constraints,
+                )
+            }),
+    );
+
+    let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
+	
+    let tls_config = rustls::ClientConfig::builder()
+        .with_cipher_suites(&my_slick_cipher_suites)
+        .with_safe_default_kx_groups()
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    
     let my_agent = ureq::AgentBuilder::new()
+        .tls_config(Arc::new(tls_config))
         .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
         .redirects(0)
         .build();
@@ -353,45 +453,19 @@ fn print_test_preamble() {
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
 }
 
-fn main() {
-    let config: UserArgs = argh::from_env();
+fn spawn_download_threads(
+	config: &UserArgs, 
+	total_downloaded_bytes_counter: &Arc<AtomicUsize>, 
+	current_down_speed: &Arc<AtomicUsize>, 
+	exit_signal: &Arc<AtomicBool>) -> Vec<JoinHandle<()>> 
+{
+	let mut download_threads = vec![];
 
-    /*
-    let args: Vec<String> = env::args().collect();
-
-    let download_thread_count = match args.get(1) {
-        Some(x) => x.parse().unwrap_or(1),
-        None => 1,
-    };
-
-    let upload_thread_count = match args.get(2) {
-        Some(x) => x.parse().unwrap_or(1),
-        None => 1,
-    };
-    */
-
-    print_test_preamble();
-
-    let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-    let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
-
-    let current_down_speed = Arc::new(AtomicUsize::new(0));
-
-    // these are just the file sizes of our upload/download http requests
-    // the tests are duration-based not size-based
-    const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
-    const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
-
-    let down_deadline = get_secs_since_unix_epoch() + 12;
-    let exit_signal = Arc::new(AtomicBool::new(false));
-
-    let mut down_handles = vec![];
-
-    // Spawn x download threads
-    for i in 0..config.download_threads {
-        let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
+	for i in 0..config.download_threads {
+		let total_downloaded_bytes_counter = Arc::clone(&total_downloaded_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_down_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
+		let config_clone = config.clone();
         let handle = std::thread::spawn(move || {
             if i > 0 {
                 // sleep a little to hit a new cloudflare metal
@@ -403,7 +477,7 @@ fn main() {
 
             loop {
                 match download_test(
-                    BYTES_TO_DOWNLOAD,
+                    config_clone.bytes_to_download,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
                     &exit_signal_clone,
@@ -421,126 +495,153 @@ fn main() {
                     return;
                 }
             }
-        });
-        down_handles.push(handle);
+		});
+		download_threads.push(handle);
     }
 
-    let mut last_bytes_down = 0;
-    total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
+	download_threads
+}
 
-    let mut down_measurements = vec![];
+fn main() {
+    let config: UserArgs = argh::from_env();
 
-    // print download speed
-    loop {
-        let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
-        let bytes_down_diff = bytes_down - last_bytes_down;
+    print_test_preamble();
 
-        // set current_down
-        current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
-        down_measurements.push(bytes_down_diff);
+    let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
+    let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
 
-        let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64).unwrap();
-        // only print progress if we are before deadline
-        if get_secs_since_unix_epoch() < down_deadline {
+    let current_down_speed = Arc::new(AtomicUsize::new(0));
+
+    // these are just the file sizes of our upload/download http requests
+    // the tests are duration-based not size-based
+    const BYTES_TO_UPLOAD: usize = 50 * 1024 * 1024;
+    const BYTES_TO_DOWNLOAD: usize = 50 * 1024 * 1024;
+     let exit_signal = Arc::new(AtomicBool::new(false));
+
+    if !config.upload_only
+    {
+        let down_deadline = get_secs_since_unix_epoch() + 12;
+       
+        let down_handles = spawn_download_threads(&config, &total_downloaded_bytes_counter, &current_down_speed, &exit_signal);
+
+        let mut last_bytes_down = 0;
+        total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
+        let mut down_measurements = vec![];
+        // print download speed
+        loop {
+            let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
+            let bytes_down_diff = bytes_down - last_bytes_down;
+
+            // set current_down
+            current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
+            down_measurements.push(bytes_down_diff);
+
+            let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
+            // only print progress if we are before deadline
+            if get_secs_since_unix_epoch() < down_deadline {
+                println!(
+                    "Download: {byte_speed:>12.*}/s {bit_speed:>14.*}it/s",
+                    16,
+                    16,
+                    byte_speed = speed_values.0,
+                    bit_speed = speed_values.1
+                );
+            }
+            io::stdout().flush().unwrap();
+
+            // if we need to spawn more threads, do it here
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+
+            last_bytes_down = bytes_down;
+
+            // exit if we have passed the deadline
+            if get_secs_since_unix_epoch() > down_deadline {
+                exit_signal.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+
+        println!("Waiting for download threads to finish...");
+        for handle in down_handles {
+            handle.join().expect("Couldn't join download thread");
+        }
+    }
+
+
+    if !config.download_only
+    {
+        // re-use exit_signal for upload tests
+        exit_signal.store(false, Ordering::SeqCst);
+
+        println!("Starting upload tests...");
+        let up_deadline = get_secs_since_unix_epoch() + 12;
+
+        let function_to_call = upload_test_no_decrypt;
+
+        // spawn x uploader threads
+        let mut up_handles = vec![];
+        for i in 0..config.upload_threads {
+            let total_bytes_uploaded_counter = Arc::clone(&total_uploaded_bytes_counter);
+            let exit_signal_clone = Arc::clone(&exit_signal);
+            let handle = std::thread::spawn(move || {
+                loop {
+                    match function_to_call(
+                        BYTES_TO_UPLOAD,
+                        &total_bytes_uploaded_counter,
+                        &exit_signal_clone,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error in upload test thread {i}: {e:?}");
+                        }
+                    }
+
+                    // exit if we have passed the deadline
+                    if get_secs_since_unix_epoch() > up_deadline {
+                        return;
+                    }
+                }
+            });
+            up_handles.push(handle);
+        }
+
+        let mut last_bytes_up = 0;
+        let mut up_measurements = vec![];
+        total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
+        // print total bytes downloaded in a loop
+        loop {
+            let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
+
+            let bytes_up_diff = bytes_up - last_bytes_up;
+            up_measurements.push(bytes_up_diff);
+
+            let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
+
             println!(
-                "Download: {byte_speed:>12.*}/s {bit_speed:>14.*}it/s",
+                "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
                 16,
                 16,
                 byte_speed = speed_values.0,
                 bit_speed = speed_values.1
             );
-        }
-        io::stdout().flush().unwrap();
 
-        // if we need to spawn more threads, do it here
+            std::thread::sleep(std::time::Duration::from_millis(1000));
 
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+            last_bytes_up = bytes_up;
 
-        last_bytes_down = bytes_down;
-
-        // dbg print seconds until deadline
-        // dbg!(down_deadline - get_secs_since_unix_epoch());
-
-        // exit if we have passed the deadline
-        if get_secs_since_unix_epoch() > down_deadline {
-            exit_signal.store(true, Ordering::SeqCst);
-            break;
-        }
-    }
-
-    println!("Waiting for download threads to finish...");
-    for handle in down_handles {
-        handle.join().expect("Couldn't join download thread");
-    }
-
-    // re-use exit_signal for upload tests
-    exit_signal.store(false, Ordering::SeqCst);
-
-    println!("Starting upload tests...");
-    let up_deadline = get_secs_since_unix_epoch() + 12;
-
-    // spawn x uploader threads
-    let mut up_handles = vec![];
-    for i in 0..config.upload_threads {
-        let total_bytes_uploaded_counter = Arc::clone(&total_uploaded_bytes_counter);
-        let exit_signal_clone = Arc::clone(&exit_signal);
-        let handle = std::thread::spawn(move || {
-            loop {
-                match upload_test(
-                    BYTES_TO_UPLOAD,
-                    &total_bytes_uploaded_counter,
-                    &exit_signal_clone,
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("Error in upload test thread {i}: {e:?}");
-                    }
-                }
-
-                // exit if we have passed the deadline
-                if get_secs_since_unix_epoch() > up_deadline {
-                    return;
-                }
+            // exit if we have passed the deadline
+            if get_secs_since_unix_epoch() > up_deadline {
+                exit_signal.store(true, Ordering::SeqCst);
+                break;
             }
-        });
-        up_handles.push(handle);
-    }
-
-    let mut last_bytes_up = 0;
-    let mut up_measurements = vec![];
-    total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
-    // print total bytes downloaded in a loop
-    loop {
-        let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
-
-        let bytes_up_diff = bytes_up - last_bytes_up;
-        up_measurements.push(bytes_up_diff);
-
-        let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64).unwrap();
-
-        println!(
-            "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
-            16,
-            16,
-            byte_speed = speed_values.0,
-            bit_speed = speed_values.1
-        );
-
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-
-        last_bytes_up = bytes_up;
-
-        // exit if we have passed the deadline
-        if get_secs_since_unix_epoch() > up_deadline {
-            exit_signal.store(true, Ordering::SeqCst);
-            break;
         }
-    }
 
-    // wait for upload threads to finish
-    println!("Waiting for upload threads to finish...");
-    for handle in up_handles {
-        handle.join().expect("Couldn't join upload thread");
+        // wait for upload threads to finish
+        println!("Waiting for upload threads to finish...");
+        for handle in up_handles {
+            handle.join().expect("Couldn't join upload thread");
+        }
+
     }
 
     println!("Work complete!");

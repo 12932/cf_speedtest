@@ -278,8 +278,6 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
 	map.insert("DUR", ("Durban", "ZA"));
 	map.insert("JNB", ("Johannesburg", "ZA"));
 	map.insert("HRE", ("Harare", "ZW"));
-
-
     map
 }
 

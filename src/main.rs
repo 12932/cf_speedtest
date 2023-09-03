@@ -5,7 +5,6 @@ use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +15,8 @@ mod tests;
 
 mod locations;
 
+mod tls_intercept;
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 static CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?measId=0";
@@ -23,9 +24,11 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.3.9) https://github.com/12932/cf_speedtest";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.4.0) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
+static TEST_DURATION_SECONDS: u64 = 12;
+static LATENCY_TEST_COUNT: u8 = 8;
 
 impl std::io::Read for UploadHelper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -33,14 +36,11 @@ impl std::io::Read for UploadHelper {
         if self.byte_ctr.load(Ordering::SeqCst) >= self.bytes_to_send
             || self.exit_signal.load(Ordering::SeqCst)
         {
-            // dbg!("Exiting");
             return Ok(0);
         }
 
         // fill the buffer with 1s
-        for byte in buf.iter_mut() {
-            *byte = 1;
-        }
+		buf.fill(1);
 
         self.byte_ctr.fetch_add(buf.len(), Ordering::SeqCst);
         self.total_uploaded_counter
@@ -61,11 +61,11 @@ struct UploadHelper {
 struct UserArgs {
     /// how many download threads to use (default 4)
     #[argh(option, default = "4")]
-    download_thread_count: usize,
+    download_thread_count: u32,
 
     /// how many upload threads to use (default 4)
     #[argh(option, default = "4")]
-    upload_thread_count: usize,
+    upload_thread_count: u32,
 
     /// when set, only run the download test
     #[argh(switch, short = 'd')]
@@ -97,24 +97,30 @@ impl UserArgs {
     }
 }
 
-fn get_secs_since_unix_epoch() -> usize {
+fn get_secs_since_unix_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as usize
+        .as_secs()
+}
+
+// Default test duration + a little bit more if we have extra threads
+fn get_test_time(thread_count: u32) -> u64 {
+	if thread_count > 4 {
+		return TEST_DURATION_SECONDS + (thread_count as u64 - 4) / 4;
+	}
+
+	TEST_DURATION_SECONDS
 }
 
 /* Given n bytes, return
      a: unit of measurement in sensible form of bytes
      b: unit of measurement in sensible form of bits
- i.e 12939428 -> (12.34 MB, 98.76 Mb)
-          814811 -> (795.8 KB, 6.36 Mb)
- basically, the BYTE value should always be greater than 1
- and never more than 1024. the bit value should just be calculated off
- the byte value
+ i.e 12939428 	-> (12.34 MB, 98.76 Mb)
+	 814811 	-> (795.8 KB, 6.36 Mb)
 */
 fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
-    const UNITS: [&str; 5] = ["", "K", "M", "G", "T"];
+    const UNITS: [&str; 5] = [" ", "K", "M", "G", "T"];
     const KILOBYTE: f64 = 1024.0;
 
     let mut bytes = bytes as f64;
@@ -132,7 +138,7 @@ fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
     if bits >= 1000.0 {
         bits /= 1000.0;
         bit_unit = match byte_unit {
-            "" => "k",
+            " " => "k",
             "K" => "m",
             "M" => "g",
             "G" => "t",
@@ -159,7 +165,6 @@ fn get_appropriate_buff_size(speed: usize) -> u64 {
 }
 
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
-// (they use Maxmind)
 fn get_our_ip_address_country() -> Result<String> {
     let resp = ureq::get(CLOUDFLARE_SPEEDTEST_CGI_URL).call()?;
     let mut body = String::new();
@@ -184,9 +189,9 @@ fn get_download_server_http_latency() -> Result<std::time::Duration> {
     let my_agent = ureq::AgentBuilder::new().build();
     let mut latency_vec = Vec::new();
 
-    for _ in 0..8 {
+    for _ in 0..LATENCY_TEST_COUNT {
         // if vec length 2 or greater and we've spent a lot of time
-        // calculating latency, exit early
+        // calculating latency, exit early (we could be on satellite or sumthin)
         if latency_vec.len() >= 2 && start.elapsed() > std::time::Duration::from_secs(1) {
             break;
         }
@@ -194,7 +199,6 @@ fn get_download_server_http_latency() -> Result<std::time::Duration> {
         let now = Instant::now();
         let _response = my_agent
             .get(CLOUDFLARE_SPEEDTEST_CGI_URL)
-            .set("accept-encoding", "mcdonalds") // https://github.com/algesten/ureq/issues/549
             .call()?
             .into_string()?;
 
@@ -222,6 +226,7 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
     Ok(server_headers)
 }
 
+// 
 fn upload_test(
     bytes: usize,
     total_up_bytes_counter: &Arc<AtomicUsize>,
@@ -229,7 +234,7 @@ fn upload_test(
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -291,7 +296,7 @@ fn download_test(
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
     let mut root_store = RootCertStore::empty();
-    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
         OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
             ta.spki,
@@ -338,8 +343,9 @@ fn download_test(
 
         // if we are fast, take big chunks
         // if we are slow, take small chunks
-        let current_down_speed = current_down_speed.load(Ordering::Relaxed);
-        let current_recv_buff = get_appropriate_buff_size(current_down_speed);
+        let current_recv_buff = get_appropriate_buff_size(
+			current_down_speed.load(Ordering::Relaxed
+		));
 
         // copy bytes into the void
         let bytes_sank = std::io::copy(
@@ -347,9 +353,11 @@ fn download_test(
             &mut std::io::sink(),
         )? as usize;
 
+		//println!("Thread {:?} sank {} bytes", std::thread::current().id(), bytes_sank);
+
         if bytes_sank == 0 {
             if total_bytes_sank == 0 {
-                panic!("Cloudflare is sending us empty responses?!")
+                eprintln!("Cloudflare sent an empty response?");
             }
 
             return Ok(());
@@ -400,28 +408,29 @@ fn print_test_preamble() {
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
 }
 
+// Spawn a given amount of threads to run a specific test
 fn spawn_test_threads<F>(
-    threads_to_spawn: usize,
-    target_test: Arc<Mutex<F>>,
+    threads_to_spawn: u32,
+    target_test: Arc<F>,
     bytes_to_request: usize,
     total_bytes_counter: &Arc<AtomicUsize>,
     current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Vec<JoinHandle<()>>
 where
-    F: FnMut(
+    F: Fn(
             usize,
             &Arc<AtomicUsize>,
             &Arc<AtomicUsize>,
             &Arc<AtomicBool>,
         ) -> std::result::Result<(), Box<dyn std::error::Error>>
-        + Send
+        + Send + Sync
         + 'static,
 {
     let mut thread_handles = vec![];
 
     for i in 0..threads_to_spawn {
-        let target_test_clone = Arc::clone(&target_test);
+		let target_test_clone = Arc::clone(&target_test);
         let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
@@ -435,8 +444,7 @@ where
             }
 
             loop {
-                let mut target_fn = target_test_clone.lock().unwrap();
-                match target_fn(
+                match target_test_clone(
                     bytes_to_request,
                     &total_downloaded_bytes_counter,
                     &current_down_clone,
@@ -461,15 +469,16 @@ where
 
     thread_handles
 }
+
 fn run_download_test(config: &UserArgs) {
     let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 
     exit_signal.store(false, Ordering::SeqCst);
     let current_down_speed = Arc::new(AtomicUsize::new(0));
-    let down_deadline = get_secs_since_unix_epoch() + 12;
+    let down_deadline = get_secs_since_unix_epoch() + get_test_time(config.download_thread_count);
 
-    let target_test = Arc::new(Mutex::new(download_test));
+    let target_test = Arc::new(download_test);
     let down_handles = spawn_test_threads(
         config.download_thread_count,
         target_test,
@@ -479,10 +488,12 @@ fn run_download_test(config: &UserArgs) {
         &exit_signal,
     );
 
+
     let mut last_bytes_down = 0;
     total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
     let mut down_measurements = vec![];
-    // print download speed
+
+    // Calculate and print download speed
     loop {
         let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
         let bytes_down_diff = bytes_down - last_bytes_down;
@@ -495,7 +506,7 @@ fn run_download_test(config: &UserArgs) {
         // only print progress if we are before deadline
         if get_secs_since_unix_epoch() < down_deadline {
             println!(
-                "Download: {byte_speed:>12.*}/s {bit_speed:>14.*}it/s",
+                "Download: {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
                 16,
                 16,
                 byte_speed = speed_values.0,
@@ -527,9 +538,9 @@ fn run_upload_test(config: &UserArgs) {
     exit_signal.store(false, Ordering::SeqCst);
 
     println!("Starting upload tests...");
-    let up_deadline = get_secs_since_unix_epoch() + 12;
+    let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.upload_thread_count);
 
-    let target_test = Arc::new(Mutex::new(upload_test));
+    let target_test = Arc::new(upload_test);
     let up_handles = spawn_test_threads(
         config.upload_thread_count,
         target_test,
@@ -542,7 +553,8 @@ fn run_upload_test(config: &UserArgs) {
     let mut last_bytes_up = 0;
     let mut up_measurements = vec![];
     total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
-    // print total bytes downloaded in a loop
+    
+	// Calculate and print upload speed
     loop {
         let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
 
@@ -552,7 +564,7 @@ fn run_upload_test(config: &UserArgs) {
         let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
 
         println!(
-            "Upload: {byte_speed:>14.*}/s {bit_speed:>14.*}it/s",
+            "Upload: {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
             16,
             16,
             byte_speed = speed_values.0,

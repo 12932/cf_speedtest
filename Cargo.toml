@@ -1,21 +1,21 @@
 [package]
 name = "cf_speedtest"
-version = "0.3.9"
+version = "0.4.0"
 authors = ["007 <007>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ureq = "2.6.2"
-chrono = "^0.4.24"
+ureq = "2.7.1"
+chrono = "^0.4.28"
 argh = "^0.1.10"
-rustls = "0.20.8" # same version as ureq 
-webpki-roots = "0.22.6" # same version as ureq
+rustls = "0.21" 		# same version as ureq 
+webpki-roots = "0.25" 	# same version as ureq
 
 [profile.release]
-debug = true
-#strip = true
+debug = false
+strip = "symbols"
 opt-level = "z"
 lto = true
 codegen-units = 1

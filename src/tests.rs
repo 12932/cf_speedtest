@@ -76,11 +76,11 @@ fn test_upload() {
 fn test_get_appropriate_byte_unit() {
     assert_eq!(
         get_appropriate_byte_unit(100),
-        ("100.00 B".to_string(), "800.00 b".to_string())
+        ("100.00  B".to_string(), "800.00  b".to_string())
     );
     assert_eq!(
         get_appropriate_byte_unit(1015),
-        ("1015.00 B".to_string(), "8.12 kb".to_string())
+        ("1015.00  B".to_string(), "8.12 kb".to_string())
     );
     assert_eq!(
         get_appropriate_byte_unit(2048),
@@ -101,7 +101,7 @@ fn test_get_appropriate_byte_unit() {
 
     assert_eq!(
         get_appropriate_byte_unit(1023),
-        ("1023.00 B".to_string(), "8.18 kb".to_string())
+        ("1023.00  B".to_string(), "8.18 kb".to_string())
     );
     assert_eq!(
         get_appropriate_byte_unit(1024),

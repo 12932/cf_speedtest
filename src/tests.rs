@@ -42,7 +42,7 @@ fn test_download() {
 
 #[test]
 fn test_upload() {
-	const BYTES_TO_UPLOAD: usize = 1024;
+    const BYTES_TO_UPLOAD: usize = 1024;
     let upload_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 

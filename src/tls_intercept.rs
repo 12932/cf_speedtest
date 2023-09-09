@@ -50,11 +50,9 @@ impl InterceptingTlsConnector {
             )
         }));
 
-		// Force ChaCha20 because some platforms dont have
-		// aes acceleration, and it's fast anyway
-        let my_cipher_suites = vec![
-            rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256
-        ];
+        // Force ChaCha20 because some platforms dont have
+        // aes acceleration, and it's fast anyway
+        let my_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
 
         let config = rustls::ClientConfig::builder()
             .with_cipher_suites(&my_cipher_suites)

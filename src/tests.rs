@@ -8,6 +8,7 @@ fn test_reachability() {
 
 #[test]
 fn test_download() {
+    const BYTES_TO_REQUEST: usize = 1024;
     let total_bytes_counter = Arc::new(AtomicUsize::new(0));
     let current_down = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
@@ -18,7 +19,7 @@ fn test_download() {
 
     let _handle = std::thread::spawn(move || {
         download_test(
-            1,
+            BYTES_TO_REQUEST,
             &total_downloaded_bytes_counter,
             &current_down_clone,
             &exit_signal_clone,
@@ -28,12 +29,12 @@ fn test_download() {
 
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        if total_bytes_counter.load(Ordering::SeqCst) >= 1 {
+        if total_bytes_counter.load(Ordering::SeqCst) >= BYTES_TO_REQUEST {
             break;
         }
     }
 
-    assert!(total_bytes_counter.load(Ordering::SeqCst) >= 1);
+    assert_eq!(total_bytes_counter.load(Ordering::SeqCst), BYTES_TO_REQUEST);
 
     exit_signal.store(true, Ordering::SeqCst);
     let _ = _handle.join();
@@ -41,8 +42,8 @@ fn test_download() {
 
 #[test]
 fn test_upload() {
+	const BYTES_TO_UPLOAD: usize = 1024;
     let upload_counter = Arc::new(AtomicUsize::new(0));
-    let _upload_bytes = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 
     let total_bytes_uploaded_counter = Arc::clone(&upload_counter);
@@ -51,7 +52,7 @@ fn test_upload() {
 
     let _handle = std::thread::spawn(move || {
         upload_test(
-            1,
+            BYTES_TO_UPLOAD,
             &total_bytes_uploaded_counter,
             &upload_bytes_clone,
             &exit_signal_clone,
@@ -61,12 +62,12 @@ fn test_upload() {
 
     for _ in 0..10 {
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        if upload_counter.load(Ordering::SeqCst) >= 1 {
+        if upload_counter.load(Ordering::SeqCst) >= BYTES_TO_UPLOAD {
             break;
         }
     }
 
-    assert!(upload_counter.load(Ordering::SeqCst) >= 1);
+    assert!(upload_counter.load(Ordering::SeqCst) >= BYTES_TO_UPLOAD);
 
     exit_signal.store(true, Ordering::SeqCst);
     let _ = _handle.join();

@@ -1,6 +1,4 @@
 use argh::FromArgs;
-use rustls::OwnedTrustAnchor;
-use rustls::RootCertStore;
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,12 +7,11 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
-
+use ureq::Agent;
+use ureq::AgentBuilder;
+mod locations;
 #[cfg(test)]
 mod tests;
-
-mod locations;
-
 mod tls_intercept;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -24,7 +21,7 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.4.0) https://github.com/12932/cf_speedtest";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.4.1) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 static TEST_DURATION_SECONDS: u64 = 12;
@@ -39,8 +36,7 @@ impl std::io::Read for UploadHelper {
             return Ok(0);
         }
 
-        // fill the buffer with 1s
-		buf.fill(1);
+        buf.fill(1);
 
         self.byte_ctr.fetch_add(buf.len(), Ordering::SeqCst);
         self.total_uploaded_counter
@@ -106,18 +102,18 @@ fn get_secs_since_unix_epoch() -> u64 {
 
 // Default test duration + a little bit more if we have extra threads
 fn get_test_time(thread_count: u32) -> u64 {
-	if thread_count > 4 {
-		return TEST_DURATION_SECONDS + (thread_count as u64 - 4) / 4;
-	}
+    if thread_count > 4 {
+        return TEST_DURATION_SECONDS + (thread_count as u64 - 4) / 4;
+    }
 
-	TEST_DURATION_SECONDS
+    TEST_DURATION_SECONDS
 }
 
 /* Given n bytes, return
      a: unit of measurement in sensible form of bytes
      b: unit of measurement in sensible form of bits
  i.e 12939428 	-> (12.34 MB, 98.76 Mb)
-	 814811 	-> (795.8 KB, 6.36 Mb)
+     814811 	-> (795.8 KB, 6.36 Mb)
 */
 fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
     const UNITS: [&str; 5] = [" ", "K", "M", "G", "T"];
@@ -226,34 +222,17 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
     Ok(server_headers)
 }
 
-// 
+//
 fn upload_test(
     bytes: usize,
     total_up_bytes_counter: &Arc<AtomicUsize>,
     _current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut root_store = RootCertStore::empty();
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
+    let custom_connector = tls_intercept::InterceptingTlsConnector::new();
 
-    let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
-
-    let tls_config = rustls::ClientConfig::builder()
-        .with_cipher_suites(&my_slick_cipher_suites)
-        .with_safe_default_kx_groups()
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let my_agent = ureq::AgentBuilder::new()
-        .tls_config(Arc::new(tls_config))
+    let agent: Agent = AgentBuilder::new()
+        .tls_connector(Arc::new(custom_connector))
         .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
         .redirects(0)
         .build();
@@ -266,7 +245,7 @@ fn upload_test(
             exit_signal: exit_signal.clone(),
         };
 
-        let resp = match my_agent
+        let resp = match agent
             .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
             .set("Content-Type", "text/plain;charset=UTF-8")
             .set("User-Agent", OUR_USER_AGENT)
@@ -295,32 +274,15 @@ fn download_test(
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut root_store = RootCertStore::empty();
-    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-        OwnedTrustAnchor::from_subject_spki_name_constraints(
-            ta.subject,
-            ta.spki,
-            ta.name_constraints,
-        )
-    }));
+    let custom_connector = tls_intercept::InterceptingTlsConnector::new();
 
-    let my_slick_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
-
-    let tls_config = rustls::ClientConfig::builder()
-        .with_cipher_suites(&my_slick_cipher_suites)
-        .with_safe_default_kx_groups()
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let my_agent = ureq::AgentBuilder::new()
-        .tls_config(Arc::new(tls_config))
+    let agent: Agent = AgentBuilder::new()
+        .tls_connector(Arc::new(custom_connector))
         .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
         .redirects(0)
         .build();
 
-    let resp = match my_agent
+    let resp = match agent
         .get(format!("{CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL}&bytes={bytes_to_request}").as_str())
         .set("User-Agent", OUR_USER_AGENT)
         .call()
@@ -343,9 +305,8 @@ fn download_test(
 
         // if we are fast, take big chunks
         // if we are slow, take small chunks
-        let current_recv_buff = get_appropriate_buff_size(
-			current_down_speed.load(Ordering::Relaxed
-		));
+        let current_recv_buff =
+            get_appropriate_buff_size(current_down_speed.load(Ordering::Relaxed));
 
         // copy bytes into the void
         let bytes_sank = std::io::copy(
@@ -353,7 +314,7 @@ fn download_test(
             &mut std::io::sink(),
         )? as usize;
 
-		//println!("Thread {:?} sank {} bytes", std::thread::current().id(), bytes_sank);
+        //println!("Thread {:?} sank {} bytes", std::thread::current().id(), bytes_sank);
 
         if bytes_sank == 0 {
             if total_bytes_sank == 0 {
@@ -424,13 +385,14 @@ where
             &Arc<AtomicUsize>,
             &Arc<AtomicBool>,
         ) -> std::result::Result<(), Box<dyn std::error::Error>>
-        + Send + Sync
+        + Send
+        + Sync
         + 'static,
 {
     let mut thread_handles = vec![];
 
     for i in 0..threads_to_spawn {
-		let target_test_clone = Arc::clone(&target_test);
+        let target_test_clone = Arc::clone(&target_test);
         let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
         let current_down_clone = Arc::clone(&current_speed.clone());
         let exit_signal_clone = Arc::clone(&exit_signal.clone());
@@ -487,7 +449,6 @@ fn run_download_test(config: &UserArgs) {
         &current_down_speed,
         &exit_signal,
     );
-
 
     let mut last_bytes_down = 0;
     total_downloaded_bytes_counter.store(0, Ordering::SeqCst);
@@ -553,8 +514,8 @@ fn run_upload_test(config: &UserArgs) {
     let mut last_bytes_up = 0;
     let mut up_measurements = vec![];
     total_uploaded_bytes_counter.store(0, Ordering::SeqCst);
-    
-	// Calculate and print upload speed
+
+    // Calculate and print upload speed
     loop {
         let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
 
@@ -564,7 +525,7 @@ fn run_upload_test(config: &UserArgs) {
         let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
 
         println!(
-            "Upload: {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
+            "Upload:   {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
             16,
             16,
             byte_speed = speed_values.0,

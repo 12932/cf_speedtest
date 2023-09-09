@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 // all cloudflare IATAs to cities (defined at https://speed.cloudflare.com/locations)
 pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'static str)> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::with_capacity(4096);
     map.insert("DXB", ("Dubai", "AE"));
 	map.insert("TIA", ("Tirana", "AL"));
 	map.insert("EVN", ("Yerevan", "AM"));

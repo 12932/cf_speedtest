@@ -1,6 +1,7 @@
 # cf_speedtest
 
-## A simple command-line internet speed test tool. Powered by https://speed.cloudflare.com 
+## What is this?
+cf_speedtest is an unofficial command-line internet speed test tool, powered by https://speed.cloudflare.com. Because cf_speedtest leverages Cloudflare's speedtest API, it can achieve much higher speeds than other tools. Here is me running cf_speedtest on an AWS m5zn.metal instance:
 
 
 ## Installation:
@@ -12,18 +13,13 @@ $ cargo install cf_speedtest
 	$ cf_speedtest
 
 
-## FAQ
-- Why did you make this?
-	- See below
-- Why would I want to use this?
-	- You don't have to use this, but it can achieve much faster speeds than browser speedtests
-
 ### TODO:
-- Use std::async or tokio instead of threads
+- Use rustls instead of ureq for download tests, to avoid TLS decryption cost
+- Use std::async or tokio instead of threads?
 - Support for proxies (HTTP/SOCKS5) with and without authentication
 - Output results to csv?
-- Show a graph
 - Show speed percentiles, and allow user to specify their own
 
 ### Disclaimers:
-- This tool works entirely over HTTP(S), which has some overhead
+- This tool works entirely over HTTPS, which has some overhead
+- This tool is completely unofficial, Cloudflare can block this tool at any time if they wanted to

@@ -44,7 +44,7 @@ jobs:
     steps:
       - name: Check if this action should be skipped
         id: skip_check
-        uses: fkirc/skip-duplicate-actions@f11521568414503656a5af807dc3018c012552c4 # v5.2.0
+        uses: fkirc/skip-duplicate-actions@v5.3.0
         with:
           skip_after_successful_duplicate: "true"
           paths: '[".cargo/**", ".github/workflows/ci.yml", "sample_configs/**", "src/**", "tests/**", "build.rs", "Cargo.lock", "Cargo.toml", "clippy.toml", "rustfmt.toml", "Cross.toml"]'
@@ -77,7 +77,7 @@ jobs:
         features: ["--all-features", "--no-default-features"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4.1.0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -87,7 +87,7 @@ jobs:
           target: ${{ matrix.info.target }}
 
       - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2.2.0
+        uses: Swatinem/rust-cache@v2.7.0
         if: ${{ github.event_name != 'pull_request' || ! github.event.pull_request.head.repo.fork }} # If it is a PR, only if not a fork
         with:
           shared-key: build-cache-${{ matrix.info.target }}
@@ -96,22 +96,22 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Build tests
-        uses: ClementTsang/cargo-action@v0.0.3
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: test
           args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          cross-version: 0.2.5
         env:
           RUST_BACKTRACE: full
 
       - name: Run tests
-        uses: ClementTsang/cargo-action@v0.0.3
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: test
           args: --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          cross-version: 0.2.5
         env:
           RUST_BACKTRACE: full
 
@@ -186,7 +186,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4.1.0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -195,23 +195,23 @@ jobs:
           target: ${{ matrix.info.target }}
 
       - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2.2.0
+        uses: Swatinem/rust-cache@v2.7.0
         if: ${{ github.event_name != 'pull_request' || ! github.event.pull_request.head.repo.fork }} # If it is a PR, only if not a fork
         with:
           shared-key: build-cache-${{ matrix.info.target }}
 
       - name: Check
-        uses: ClementTsang/cargo-action@v0.0.3
+        uses: actions-rs/cargo@v1.0.1
         with:
           command: check
           args: --all-targets --verbose --target=${{ matrix.info.target }} --locked
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.4
+          cross-version: 0.2.5
 
   create-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4.1.0
       - uses: taiki-e/create-gh-release-action@v1
         with:
           # (optional) Path to changelog.
@@ -233,7 +233,7 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4.1.0
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.

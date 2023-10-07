@@ -12,7 +12,7 @@ use ureq::AgentBuilder;
 mod locations;
 #[cfg(test)]
 mod tests;
-mod tls_intercept;
+mod tls;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -229,7 +229,7 @@ fn upload_test(
     _current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let custom_connector = tls_intercept::InterceptingTlsConnector::new();
+    let custom_connector = tls::InterceptingTlsConnector::new();
 
     let agent: Agent = AgentBuilder::new()
         .tls_connector(Arc::new(custom_connector))
@@ -274,7 +274,7 @@ fn download_test(
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let custom_connector = tls_intercept::InterceptingTlsConnector::new();
+    let custom_connector = tls::InterceptingTlsConnector::new();
 
     let agent: Agent = AgentBuilder::new()
         .tls_connector(Arc::new(custom_connector))

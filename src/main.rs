@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -9,6 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use ureq::Agent;
 use ureq::AgentBuilder;
+
+mod args;
+use args::UserArgs;
+
 mod locations;
 #[cfg(test)]
 mod tests;
@@ -21,11 +25,12 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.4.1) https://github.com/12932/cf_speedtest";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.4.3) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 static TEST_DURATION_SECONDS: u64 = 12;
 static LATENCY_TEST_COUNT: u8 = 8;
+static NEW_METAL_SLEEP_MILLIS: u32 = 250;
 
 impl std::io::Read for UploadHelper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -50,47 +55,6 @@ struct UploadHelper {
     byte_ctr: Arc<AtomicUsize>,
     total_uploaded_counter: Arc<AtomicUsize>,
     exit_signal: Arc<AtomicBool>,
-}
-
-#[derive(FromArgs, Clone)]
-/// A speedtest CLI written in Rust
-struct UserArgs {
-    /// how many download threads to use (default 4)
-    #[argh(option, default = "4")]
-    download_thread_count: u32,
-
-    /// how many upload threads to use (default 4)
-    #[argh(option, default = "4")]
-    upload_thread_count: u32,
-
-    /// when set, only run the download test
-    #[argh(switch, short = 'd')]
-    download_only: bool,
-
-    /// when set, only run the upload test
-    #[argh(switch, short = 'u')]
-    upload_only: bool,
-
-    /// the amount of bytes to download in a single request (default 50MB)
-    #[argh(option, default = "50 * 1024 * 1024")]
-    bytes_to_download: usize,
-
-    /// the amount of bytes to upload in a single request (default 50MB)
-    #[argh(option, default = "50 * 1024 * 1024")]
-    bytes_to_upload: usize,
-}
-
-impl UserArgs {
-    fn validate(&self) -> Result<()> {
-        if self.download_only && self.upload_only {
-            Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Cannot specify both --download-only and --upload-only. Please only specify one.",
-            )))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 fn get_secs_since_unix_epoch() -> u64 {
@@ -148,6 +112,11 @@ fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
         format!("{:.2} {}B", bytes, byte_unit),
         format!("{:.2} {}b", bits, bit_unit),
     )
+}
+
+fn get_appropriate_byte_unit_rate(bytes: u64) -> (String, String) {
+    let (a, b) = get_appropriate_byte_unit(bytes);
+    (format!("{}/s", a), format!("{}it/s", b))
 }
 
 fn get_appropriate_buff_size(speed: usize) -> u64 {
@@ -220,6 +189,12 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
     }
 
     Ok(server_headers)
+}
+
+fn get_current_timestamp() -> String {
+    let now = chrono::Local::now();
+
+    format!("{} {}", now.format("%Y-%m-%d %H:%M:%S"), now.format("%Z"))
 }
 
 //
@@ -330,13 +305,7 @@ fn download_test(
 }
 
 fn print_test_preamble() {
-    let now = chrono::Local::now();
-    println!(
-        "{:<32} {} {}",
-        "Start:",
-        now.format("%Y-%m-%d %H:%M:%S"),
-        now.format("%Z")
-    );
+    println!("{:<32} {}", "Start:", get_current_timestamp());
 
     let iata_mapping = locations::generate_iata_to_city_map();
     let country_mapping = locations::generate_cca2_to_full_country_name_map();
@@ -401,7 +370,7 @@ where
                 // sleep a little to hit a new cloudflare metal
                 // (each metal will throttle to 1 gigabit)
                 std::thread::sleep(std::time::Duration::from_millis(
-                    (i * 250).try_into().unwrap(),
+                    (i * NEW_METAL_SLEEP_MILLIS).try_into().unwrap(),
                 ));
             }
 
@@ -432,7 +401,7 @@ where
     thread_handles
 }
 
-fn run_download_test(config: &UserArgs) {
+fn run_download_test(config: &UserArgs) -> Vec<usize> {
     let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 
@@ -489,16 +458,17 @@ fn run_download_test(config: &UserArgs) {
     for handle in down_handles {
         handle.join().expect("Couldn't join download thread");
     }
+
+    down_measurements
 }
 
-fn run_upload_test(config: &UserArgs) {
+fn run_upload_test(config: &UserArgs) -> Vec<usize> {
     let exit_signal = Arc::new(AtomicBool::new(false));
     let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let current_up_speed = Arc::new(AtomicUsize::new(0));
     // re-use exit_signal for upload tests
     exit_signal.store(false, Ordering::SeqCst);
 
-    println!("Starting upload tests...");
     let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.upload_thread_count);
 
     let target_test = Arc::new(upload_test);
@@ -548,6 +518,34 @@ fn run_upload_test(config: &UserArgs) {
     for handle in up_handles {
         handle.join().expect("Couldn't join upload thread");
     }
+
+    up_measurements
+}
+
+fn compute_statistics(data: &mut Vec<usize>) -> (f64, f64, usize, usize, usize, usize) {
+    if data.is_empty() {
+        return (0f64, 0f64, 0, 0, 0, 0);
+    }
+
+    data.sort();
+
+    let len = data.len();
+    let sum: usize = data.iter().sum();
+    let average = sum as f64 / len as f64;
+
+    let median = if len % 2 == 0 {
+        (data[len / 2 - 1] + data[len / 2]) as f64 / 2.0
+    } else {
+        data[len / 2] as f64
+    };
+
+    let p90_index = (0.90 * len as f64).ceil() as usize - 1;
+    let p99_index = (0.99 * len as f64).ceil() as usize - 1;
+
+    let min = data[0];
+    let max = *data.last().unwrap();
+
+    (median, average, data[p90_index], data[p99_index], min, max)
 }
 
 fn main() {
@@ -556,13 +554,48 @@ fn main() {
 
     print_test_preamble();
 
+    let mut down_measurements: Vec<usize> = Vec::new();
+    let mut up_measurements: Vec<usize> = Vec::new();
+
     if !config.upload_only {
-        run_download_test(&config);
+        down_measurements = run_download_test(&config);
     }
 
     if !config.download_only {
-        run_upload_test(&config);
+        println!("Starting upload tests...");
+        up_measurements = run_upload_test(&config);
     }
 
-    println!("Work complete!");
+    let (download_median, download_avg, download_p90, _, _, _) =
+        compute_statistics(&mut down_measurements);
+    let (upload_median, upload_avg, upload_p90, _, _, _) = compute_statistics(&mut up_measurements);
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
+        .set_header(vec![
+            Cell::new(""),
+            Cell::new("Median"),
+            Cell::new("Average"),
+            Cell::new("90th pctile"),
+        ]);
+
+    // Populate rows based on computed statistics
+    table.add_row(vec![
+        Cell::new("Download"),
+        Cell::new(&get_appropriate_byte_unit_rate(download_median as u64).1),
+        Cell::new(&get_appropriate_byte_unit_rate(download_avg as u64).1),
+        Cell::new(&get_appropriate_byte_unit_rate(download_p90 as u64).1),
+    ]);
+
+    table.add_row(vec![
+        Cell::new("Upload"),
+        Cell::new(&get_appropriate_byte_unit_rate(upload_median as u64).1),
+        Cell::new(&get_appropriate_byte_unit_rate(upload_avg as u64).1),
+        Cell::new(&get_appropriate_byte_unit_rate(upload_p90 as u64).1),
+    ]);
+
+
+    print!("\n{}\n{}", get_current_timestamp(), table);
 }

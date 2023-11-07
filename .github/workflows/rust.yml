@@ -65,6 +65,45 @@ jobs:
               target: "x86_64-pc-windows-msvc",
               cross: false,
             }
+          - {
+              os: "ubuntu-latest",
+              target: "i686-unknown-linux-gnu",
+              cross: true,
+              rust: stable,
+            }
+          - {
+              os: "ubuntu-latest",
+              target: "x86_64-unknown-linux-musl",
+              cross: true,
+              rust: stable,
+            }
+          - {
+              os: "ubuntu-latest",
+              target: "i686-unknown-linux-musl",
+              cross: true,
+              rust: stable,
+            }
+          # armv7
+          - {
+              os: "ubuntu-latest",
+              target: "armv7-unknown-linux-gnueabihf",
+              cross: true,
+              rust: stable,
+            }
+          # armv6
+          - {
+              os: "ubuntu-latest",
+              target: "arm-unknown-linux-gnueabihf",
+              cross: true,
+              rust: stable,
+            }
+          # arm5
+          - {
+              os: "ubuntu-latest",
+              target: "armv5te-unknown-linux-musleabi",
+              cross: true,
+              rust: stable,
+            }
         features: ["--all-features", "--no-default-features"]
     steps:
       - name: Checkout repository
@@ -135,21 +174,6 @@ jobs:
               cross: true,
               rust: stable,
             }
-
-          # Beta; should be allowed to fail.
-          - {
-              os: "ubuntu-latest",
-              target: "x86_64-unknown-linux-gnu",
-              cross: false,
-              rust: beta,
-            }
-          - {
-              os: "windows-2019",
-              target: "x86_64-pc-windows-msvc",
-              cross: false,
-              rust: beta,
-            }
-
           # armv7
           - {
               os: "ubuntu-latest",
@@ -157,7 +181,6 @@ jobs:
               cross: true,
               rust: stable,
             }
-
           # armv6
           - {
               os: "ubuntu-latest",
@@ -165,7 +188,6 @@ jobs:
               cross: true,
               rust: stable,
             }
-
           # arm5
           - {
               os: "ubuntu-latest",

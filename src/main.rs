@@ -584,18 +584,17 @@ fn main() {
     // Populate rows based on computed statistics
     table.add_row(vec![
         Cell::new("Download"),
-        Cell::new(&get_appropriate_byte_unit_rate(download_median as u64).1),
-        Cell::new(&get_appropriate_byte_unit_rate(download_avg as u64).1),
-        Cell::new(&get_appropriate_byte_unit_rate(download_p90 as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(download_median as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(download_avg as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(download_p90 as u64).1),
     ]);
 
     table.add_row(vec![
         Cell::new("Upload"),
-        Cell::new(&get_appropriate_byte_unit_rate(upload_median as u64).1),
-        Cell::new(&get_appropriate_byte_unit_rate(upload_avg as u64).1),
-        Cell::new(&get_appropriate_byte_unit_rate(upload_p90 as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(upload_median as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(upload_avg as u64).1),
+        Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),
     ]);
-
 
     print!("\n{}\n{}", get_current_timestamp(), table);
 }

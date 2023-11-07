@@ -61,15 +61,15 @@ jobs:
               cross: true,
             }
           - {
-              os: "windows-2019",
-              target: "x86_64-pc-windows-msvc",
-              cross: false,
-            }
-          - {
               os: "ubuntu-latest",
               target: "i686-unknown-linux-gnu",
               cross: true,
               rust: stable,
+            }
+          - {
+              os: "windows-2019",
+              target: "x86_64-pc-windows-msvc",
+              cross: false,
             }
           - {
               os: "ubuntu-latest",
@@ -86,14 +86,14 @@ jobs:
           # armv7
           - {
               os: "ubuntu-latest",
-              target: "armv7-unknown-linux-gnueabihf",
+              target: "armv7-unknown-linux-musleabi",
               cross: true,
               rust: stable,
             }
           # armv6
           - {
               os: "ubuntu-latest",
-              target: "arm-unknown-linux-gnueabihf",
+              target: "arm-unknown-linux-musleabi",
               cross: true,
               rust: stable,
             }
@@ -131,7 +131,6 @@ jobs:
           command: test
           args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.5
         env:
           RUST_BACKTRACE: full
 
@@ -141,89 +140,12 @@ jobs:
           command: test
           args: --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
           use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.5
         env:
           RUST_BACKTRACE: full
 
-  # Run cargo check on all other platforms
-  other-check:
-    needs: pre-job
-    runs-on: ${{ matrix.info.os }}
-    if: ${{ needs.pre-job.outputs.should_skip != 'true' }}
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        info:
-          # x86 or x64
-          - {
-              os: "ubuntu-latest",
-              target: "i686-unknown-linux-gnu",
-              cross: true,
-              rust: stable,
-            }
-          - {
-              os: "ubuntu-latest",
-              target: "x86_64-unknown-linux-musl",
-              cross: true,
-              rust: stable,
-            }
-          - {
-              os: "ubuntu-latest",
-              target: "i686-unknown-linux-musl",
-              cross: true,
-              rust: stable,
-            }
-          # armv7
-          - {
-              os: "ubuntu-latest",
-              target: "armv7-unknown-linux-gnueabihf",
-              cross: true,
-              rust: stable,
-            }
-          # armv6
-          - {
-              os: "ubuntu-latest",
-              target: "arm-unknown-linux-gnueabihf",
-              cross: true,
-              rust: stable,
-            }
-          # arm5
-          - {
-              os: "ubuntu-latest",
-              target: "armv5te-unknown-linux-musleabi",
-              cross: true,
-              rust: stable,
-            }
-
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4.1.1
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.info.rust }}
-          target: ${{ matrix.info.target }}
-
-      - name: Enable Rust cache
-        uses: Swatinem/rust-cache@v2.7.0
-        if: ${{ github.event_name != 'pull_request' || ! github.event.pull_request.head.repo.fork }} # If it is a PR, only if not a fork
-        with:
-          shared-key: build-cache-${{ matrix.info.target }}
-
-      - name: Check
-        uses: actions-rs/cargo@v1.0.1
-        with:
-          command: check
-          args: --all-targets --verbose --target=${{ matrix.info.target }} --locked
-          use-cross: ${{ matrix.info.cross }}
-          cross-version: 0.2.5
-
   completion:
     name: "CI Pass Check"
-    needs: [supported, other-check]
+    needs: [supported]
     runs-on: "ubuntu-latest"
     steps:
       - name: CI Passed

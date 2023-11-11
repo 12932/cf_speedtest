@@ -1,7 +1,7 @@
 # cf_speedtest
 
 ## What is this?
-cf_speedtest is an unofficial, cross-platform, command-line internet speed test tool, powered by https://speed.cloudflare.com. cf_speedtest leverages Cloudflare's own Speedtest API, it can achieve much higher speeds than other tools. Here is me running cf_speedtest on an AWS m5zn.metal instance:
+cf_speedtest is an unofficial, cross-platform, command-line internet speed test tool, powered by https://speed.cloudflare.com. cf_speedtest leverages Cloudflare's own Speedtest API, it can achieve much higher speeds than other tools. Here is an example of  cf_speedtest running on an AWS m5zn.metal instance:
 
 
 ## Installation:
@@ -15,8 +15,8 @@ $ cargo install cf_speedtest
 
 ### TODO:
 - Use rustls instead of ureq for download tests, to avoid TLS decryption cost
-- Support for proxies (HTTP/SOCKS5) with and without authentication
-- Output results to csv
+- Support for proxies (HTTP/SOCKS5)
+- Option to output results to CSV file
 
 ### Disclaimers:
 - This tool works entirely over HTTPS, which has some overhead

@@ -407,11 +407,11 @@ fn run_download_test(config: &UserArgs) -> Vec<usize> {
 
     exit_signal.store(false, Ordering::SeqCst);
     let current_down_speed = Arc::new(AtomicUsize::new(0));
-    let down_deadline = get_secs_since_unix_epoch() + get_test_time(config.download_thread_count);
+    let down_deadline = get_secs_since_unix_epoch() + get_test_time(config.download_threads);
 
     let target_test = Arc::new(download_test);
     let down_handles = spawn_test_threads(
-        config.download_thread_count,
+        config.download_threads,
         target_test,
         config.bytes_to_download,
         &total_downloaded_bytes_counter,
@@ -469,11 +469,11 @@ fn run_upload_test(config: &UserArgs) -> Vec<usize> {
     // re-use exit_signal for upload tests
     exit_signal.store(false, Ordering::SeqCst);
 
-    let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.upload_thread_count);
+    let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.upload_threads);
 
     let target_test = Arc::new(upload_test);
     let up_handles = spawn_test_threads(
-        config.upload_thread_count,
+        config.upload_threads,
         target_test,
         config.bytes_to_upload,
         &total_uploaded_bytes_counter,

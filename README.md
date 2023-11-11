@@ -1,8 +1,9 @@
 # cf_speedtest
 
 ## What is this?
-cf_speedtest is an unofficial, cross-platform, command-line internet speed test tool, powered by https://speed.cloudflare.com. cf_speedtest leverages Cloudflare's own Speedtest API, it can achieve much higher speeds than other tools. Here is an example of  cf_speedtest running on an AWS m5zn.metal instance:
+cf_speedtest is an unofficial, cross-platform, command-line internet speed test tool, powered by https://speed.cloudflare.com. cf_speedtest leverages Cloudflare's own Speedtest API, it can achieve much higher speeds than other tools. Here is an example of  cf_speedtest running on an [AWS m5zn.6xlarge instance](https://aws.amazon.com/blogs/aws/new-ec2-m5zn-instances-fastest-intel-xeon-scalable-cpu-in-the-cloud/) (advertised as 50Gbit capable):
 
+[![asciicast](https://asciinema.org/a/ujPEsr7KuGkNtcF7MGzemRO9z.svg)](https://asciinema.org/a/ujPEsr7KuGkNtcF7MGzemRO9z)
 
 ## Installation:
 ```bash

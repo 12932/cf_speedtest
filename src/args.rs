@@ -5,12 +5,12 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(FromArgs, Clone)]
 /// A speedtest CLI written in Rust
 pub struct UserArgs {
-    /// how many download threads to use (default 4)
-    #[argh(option, default = "4")]
+    /// how many download threads to use (default 8)
+    #[argh(option, default = "8")]
     pub download_threads: u32,
 
-    /// how many upload threads to use (default 4)
-    #[argh(option, default = "4")]
+    /// how many upload threads to use (default 8)
+    #[argh(option, default = "8")]
     pub upload_threads: u32,
 
     /// when set, only run the download test

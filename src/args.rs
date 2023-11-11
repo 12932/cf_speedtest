@@ -7,11 +7,11 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct UserArgs {
     /// how many download threads to use (default 4)
     #[argh(option, default = "4")]
-    pub download_thread_count: u32,
+    pub download_threads: u32,
 
     /// how many upload threads to use (default 4)
     #[argh(option, default = "4")]
-    pub upload_thread_count: u32,
+    pub upload_threads: u32,
 
     /// when set, only run the download test
     #[argh(switch, short = 'd')]

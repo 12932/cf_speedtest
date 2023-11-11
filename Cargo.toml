@@ -22,7 +22,7 @@ chrono = "0.4.31"
 argh = "0.1.12"
 rustls = "0.21" 		# same version as ureq 
 webpki-roots = "0.25" 	# same version as ureq
-comfy-table = "*"
+comfy-table = "7.1.0"
 
 [profile.release]
 debug = false

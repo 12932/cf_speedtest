@@ -17,7 +17,6 @@ $ cargo install cf_speedtest
 - Use rustls instead of ureq for download tests, to avoid TLS decryption cost
 - Support for proxies (HTTP/SOCKS5) with and without authentication
 - Output results to csv
-- Show speed percentiles, and allow user to specify their own
 
 ### Disclaimers:
 - This tool works entirely over HTTPS, which has some overhead

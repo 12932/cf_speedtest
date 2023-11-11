@@ -1,9 +1,8 @@
 # Main CI workflow to validate PRs and branches are correctly formatted
 # and pass tests.
 #
-# CI workflow was based on a lot of work from other people:
-# mainly taken from bottom
-# Supported platforms run the following tasks:
+# I took some of these workflows/jobs from
+# https://github.com/ClementTsang/bottom
 # 
 # - cargo fmt
 # - cargo test (built/test in separate steps)
@@ -80,13 +79,6 @@ jobs:
           - {
               os: "ubuntu-latest",
               target: "i686-unknown-linux-musl",
-              cross: true,
-              rust: stable,
-            }
-          # armv7
-          - {
-              os: "ubuntu-latest",
-              target: "armv7-unknown-linux-musleabi",
               cross: true,
               rust: stable,
             }

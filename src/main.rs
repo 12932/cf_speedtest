@@ -25,7 +25,7 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.4.3) https://github.com/12932/cf_speedtest";
+static OUR_USER_AGENT: &str = "cf_speedtest (0.4.5) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 static TEST_DURATION_SECONDS: u64 = 12;
@@ -596,5 +596,5 @@ fn main() {
         Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),
     ]);
 
-    print!("\n{}\n{}", get_current_timestamp(), table);
+    print!("\n{}\n{}\n", get_current_timestamp(), table);
 }

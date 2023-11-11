@@ -1,10 +1,20 @@
 [package]
 name = "cf_speedtest"
 version = "0.4.5"
-authors = ["007 <007>"]
+authors = ["https://github.com/12932"]
+repository = "https://github.com/12932/cf_speedtest"
+keywords = ["cross-platform", "speedtest", "cli", "speed", "test"]
+categories = ["command-line-utilities"]
 edition = "2021"
+license = "MIT"
+description = "A command-line internet speed test tool"
+readme = "README.md"
+default-run = "cf_speedtest"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "cf_speedtest"
+path = "src/main.rs"
+doc = false
 
 [dependencies]
 ureq = "2.8.0"

@@ -28,6 +28,10 @@ pub struct UserArgs {
     /// the amount of bytes to upload in a single request (default 50MB)
     #[argh(option, default = "50 * 1024 * 1024")]
     pub bytes_to_upload: usize,
+
+    /// how many seconds to run each upload/download test for (default 12)
+    #[argh(option, default = "12")]
+    pub test_duration_seconds: u64,
 }
 
 impl UserArgs {

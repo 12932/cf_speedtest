@@ -28,7 +28,6 @@ static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cg
 static OUR_USER_AGENT: &str = "cf_speedtest (0.4.6) https://github.com/12932/cf_speedtest";
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
-static TEST_DURATION_SECONDS: u64 = 12;
 static LATENCY_TEST_COUNT: u8 = 8;
 static NEW_METAL_SLEEP_MILLIS: u32 = 250;
 
@@ -65,12 +64,12 @@ fn get_secs_since_unix_epoch() -> u64 {
 }
 
 // Default test duration + a little bit more if we have extra threads
-fn get_test_time(thread_count: u32) -> u64 {
+fn get_test_time(test_duration_seconds: u64, thread_count: u32) -> u64 {
     if thread_count > 4 {
-        return TEST_DURATION_SECONDS + (thread_count as u64 - 4) / 4;
+        return test_duration_seconds + (thread_count as u64 - 4) / 4;
     }
 
-    TEST_DURATION_SECONDS
+    test_duration_seconds
 }
 
 /* Given n bytes, return
@@ -407,7 +406,7 @@ fn run_download_test(config: &UserArgs) -> Vec<usize> {
 
     exit_signal.store(false, Ordering::SeqCst);
     let current_down_speed = Arc::new(AtomicUsize::new(0));
-    let down_deadline = get_secs_since_unix_epoch() + get_test_time(config.download_threads);
+    let down_deadline = get_secs_since_unix_epoch() + get_test_time(config.test_duration_seconds, config.download_threads);
 
     let target_test = Arc::new(download_test);
     let down_handles = spawn_test_threads(
@@ -469,7 +468,7 @@ fn run_upload_test(config: &UserArgs) -> Vec<usize> {
     // re-use exit_signal for upload tests
     exit_signal.store(false, Ordering::SeqCst);
 
-    let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.upload_threads);
+    let up_deadline = get_secs_since_unix_epoch() + get_test_time(config.test_duration_seconds, config.upload_threads);
 
     let target_test = Arc::new(upload_test);
     let up_handles = spawn_test_threads(

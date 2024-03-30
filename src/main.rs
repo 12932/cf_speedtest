@@ -369,7 +369,7 @@ where
                 // sleep a little to hit a new cloudflare metal
                 // (each metal will throttle to 1 gigabit)
                 std::thread::sleep(std::time::Duration::from_millis(
-                    (i * NEW_METAL_SLEEP_MILLIS).try_into().unwrap(),
+                    (i * NEW_METAL_SLEEP_MILLIS).into(),
                 ));
             }
 
@@ -523,7 +523,7 @@ fn run_upload_test(config: &UserArgs) -> Vec<usize> {
     up_measurements
 }
 
-fn compute_statistics(data: &mut Vec<usize>) -> (f64, f64, usize, usize, usize, usize) {
+fn compute_statistics(data: &mut [usize]) -> (f64, f64, usize, usize, usize, usize) {
     if data.is_empty() {
         return (0f64, 0f64, 0, 0, 0, 0);
     }

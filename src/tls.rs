@@ -1,5 +1,7 @@
+use rustls::crypto::ring;
+use rustls::crypto::ring::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256;
+use rustls::pki_types::TrustAnchor;
 use rustls::ClientConfig;
-use rustls::OwnedTrustAnchor;
 use rustls::RootCertStore;
 use std::sync::Arc;
 use ureq::TlsConnector;
@@ -42,25 +44,23 @@ pub struct InterceptingTlsConnector {
 impl InterceptingTlsConnector {
     pub fn new() -> Self {
         let mut root_store = RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-            OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject,
-                ta.spki,
-                ta.name_constraints,
-            )
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| TrustAnchor {
+            subject: ta.subject.clone(),
+            subject_public_key_info: ta.subject_public_key_info.clone(),
+            name_constraints: None,
         }));
 
-        // Force ChaCha20 because some platforms dont have
-        // aes acceleration, and it's fast anyway, so why not
-        let my_cipher_suites = vec![rustls::cipher_suite::TLS13_CHACHA20_POLY1305_SHA256];
+        let my_provider = rustls::crypto::CryptoProvider {
+            cipher_suites: vec![TLS13_CHACHA20_POLY1305_SHA256],
+            ..ring::default_provider()
+        };
 
-        let config = rustls::ClientConfig::builder()
-            .with_cipher_suites(&my_cipher_suites)
-            .with_safe_default_kx_groups()
+        let config = rustls::ClientConfig::builder_with_provider(my_provider.into())
             .with_safe_default_protocol_versions()
             .unwrap()
             .with_root_certificates(root_store)
             .with_no_client_auth();
+
         Self {
             inner: Arc::new(config),
         }

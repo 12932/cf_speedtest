@@ -118,7 +118,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Build tests
-        uses: actions-rs/cargo@v1.0.1
+        uses: actions-rs/cargo@v1.0.3
         with:
           command: test
           args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
@@ -127,7 +127,7 @@ jobs:
           RUST_BACKTRACE: full
 
       - name: Run tests
-        uses: actions-rs/cargo@v1.0.1
+        uses: actions-rs/cargo@v1.0.3
         with:
           command: test
           args: --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet

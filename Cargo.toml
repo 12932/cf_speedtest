@@ -1,6 +1,6 @@
 [package]
 name = "cf_speedtest"
-version = "0.4.8"
+version = "0.5.0"
 authors = ["https://github.com/12932"]
 repository = "https://github.com/12932/cf_speedtest"
 keywords = ["cross-platform", "speedtest", "cli", "speed", "test"]
@@ -17,12 +17,13 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-ureq = "2.9.6"
-chrono = "0.4.37"
+ureq = "2.10.0"
+chrono = "0.4.38"
 argh = "0.1.12"
-rustls = "0.22.4" 		# same version as ureq 
-webpki-roots = "0.26" 	# same version as ureq
-comfy-table = "7.1.0"
+rustls = { version = "0.23.5", default-features = false, features = ["ring"] } 	# same version as ureq 
+webpki-roots = "0.26" 	                                                        # same version as ureq
+comfy-table = "7.1.1"
+once_cell = "1.19.0"
 
 [profile.release]
 debug = false

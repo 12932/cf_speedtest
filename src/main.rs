@@ -8,15 +8,16 @@ use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use ureq::Agent;
-use ureq::AgentBuilder;
 
 mod args;
 use args::UserArgs;
 
+mod agent;
+use crate::agent::create_configured_agent;
+
 mod locations;
 #[cfg(test)]
 mod tests;
-mod tls;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -25,7 +26,11 @@ static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__u
 static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
     "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static OUR_USER_AGENT: &str = "cf_speedtest (0.4.6) https://github.com/12932/cf_speedtest";
+static OUR_USER_AGENT: &str = concat!(
+    "cf_speedtest (",
+    env!("CARGO_PKG_VERSION"),
+    ") https://github.com/12932/cf_speedtest"
+);
 
 static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
 static LATENCY_TEST_COUNT: u8 = 8;
@@ -196,20 +201,13 @@ fn get_current_timestamp() -> String {
     format!("{} {}", now.format("%Y-%m-%d %H:%M:%S"), now.format("%Z"))
 }
 
-//
 fn upload_test(
     bytes: usize,
     total_up_bytes_counter: &Arc<AtomicUsize>,
     _current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let custom_connector = tls::InterceptingTlsConnector::new();
-
-    let agent: Agent = AgentBuilder::new()
-        .tls_connector(Arc::new(custom_connector))
-        .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
-        .redirects(0)
-        .build();
+    let agent: Agent = create_configured_agent();
 
     loop {
         let upload_helper = UploadHelper {
@@ -222,7 +220,6 @@ fn upload_test(
         let resp = match agent
             .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
             .set("Content-Type", "text/plain;charset=UTF-8")
-            .set("User-Agent", OUR_USER_AGENT)
             .send(upload_helper)
         {
             Ok(resp) => resp,
@@ -248,17 +245,10 @@ fn download_test(
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let custom_connector = tls::InterceptingTlsConnector::new();
-
-    let agent: Agent = AgentBuilder::new()
-        .tls_connector(Arc::new(custom_connector))
-        .timeout_connect(std::time::Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
-        .redirects(0)
-        .build();
+    let agent: Agent = create_configured_agent();
 
     let resp = match agent
         .get(format!("{CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL}&bytes={bytes_to_request}").as_str())
-        .set("User-Agent", OUR_USER_AGENT)
         .call()
     {
         Ok(resp) => resp,
@@ -306,18 +296,15 @@ fn download_test(
 fn print_test_preamble() {
     println!("{:<32} {}", "Start:", get_current_timestamp());
 
-    let iata_mapping = locations::generate_iata_to_city_map();
-    let country_mapping = locations::generate_cca2_to_full_country_name_map();
-
     let our_country = get_our_ip_address_country().expect("Couldn't get our country");
-    let our_country_full = country_mapping.get(&our_country as &str);
+    let our_country_full = locations::CCA2_TO_COUNTRY_NAME.get(&our_country as &str);
     let latency = get_download_server_http_latency().expect("Couldn't get server latency");
     let headers = get_download_server_info().expect("Couldn't get download server info");
 
     let unknown_colo = &"???".to_owned();
     let unknown_colo_info = &("UNKNOWN", "UNKNOWN");
     let cf_colo = headers.get("cf-meta-colo").unwrap_or(unknown_colo);
-    let colo_info = iata_mapping
+    let colo_info = locations::IATA_TO_CITY_COUNTRY
         .get(cf_colo as &str)
         .unwrap_or(unknown_colo_info);
 
@@ -331,7 +318,7 @@ fn print_test_preamble() {
         "Server Location:",
         cf_colo,
         colo_info.0,
-        country_mapping.get(colo_info.1).unwrap_or(&"UNKNOWN")
+        locations::CCA2_TO_COUNTRY_NAME.get(colo_info.1).unwrap_or(&"UNKNOWN")
     );
 
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
@@ -584,14 +571,14 @@ fn main() {
 
     // Populate rows based on computed statistics
     table.add_row(vec![
-        Cell::new("Download"),
+        Cell::new("DOWN"),
         Cell::new(get_appropriate_byte_unit_rate(download_median as u64).1),
         Cell::new(get_appropriate_byte_unit_rate(download_avg as u64).1),
         Cell::new(get_appropriate_byte_unit_rate(download_p90 as u64).1),
     ]);
 
     table.add_row(vec![
-        Cell::new("Upload"),
+        Cell::new("UP"),
         Cell::new(get_appropriate_byte_unit_rate(upload_median as u64).1),
         Cell::new(get_appropriate_byte_unit_rate(upload_avg as u64).1),
         Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),

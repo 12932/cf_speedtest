@@ -1,4 +1,12 @@
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
+
+pub static IATA_TO_CITY_COUNTRY: Lazy<HashMap<&'static str, (&'static str, &'static str)>> = Lazy::new(|| {
+    generate_iata_to_city_map()
+});
+pub static CCA2_TO_COUNTRY_NAME: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
+    generate_cca2_to_full_country_name_map()
+});
 
 // all cloudflare IATAs to cities (defined at https://speed.cloudflare.com/locations)
 pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'static str)> {
@@ -31,6 +39,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("BWN", ("Bandar Seri Begawan", "BN"));
     map.insert("LPB", ("La Paz", "BO"));
     map.insert("QWJ", ("Americana", "BR"));
+    map.insert("ARU", ("Aracatuba", "BR"));
     map.insert("BEL", ("Belém", "BR"));
     map.insert("CNF", ("Belo Horizonte", "BR"));
     map.insert("BNU", ("Blumenau", "BR"));
@@ -48,11 +57,11 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("JOI", ("Joinville", "BR"));
     map.insert("JDO", ("Juazeiro do Norte", "BR"));
     map.insert("MAO", ("Manaus", "BR"));
+    map.insert("PMW", ("Palmas", "BR"));
     map.insert("POA", ("Porto Alegre", "BR"));
     map.insert("REC", ("Recife", "BR"));
     map.insert("RAO", ("Ribeirao Preto", "BR"));
     map.insert("GIG", ("Rio de Janeiro", "BR"));
-    map.insert("SSA", ("Salvador", "BR"));
     map.insert("SJP", ("São José do Rio Preto", "BR"));
     map.insert("SJK", ("São José dos Campos", "BR"));
     map.insert("GRU", ("São Paulo", "BR"));
@@ -74,12 +83,14 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("FIH", ("Kinshasa", "CD"));
     map.insert("GVA", ("Geneva", "CH"));
     map.insert("ZRH", ("Zurich", "CH"));
+    map.insert("ABJ", ("Abidjan", "CI"));
+    map.insert("ASK", ("Yamoussoukro", "CI"));
     map.insert("ARI", ("Arica", "CL"));
     map.insert("SCL", ("Santiago", "CL"));
-    map.insert("BOG", ("Bogotá", "CO"));
+    map.insert("BAQ", ("Barranquilla", "CO"));
+    map.insert("BOG", ("Bogota", "CO"));
     map.insert("MDE", ("Medellín", "CO"));
     map.insert("SJO", ("San José", "CR"));
-    map.insert("CUR", ("Willemstad", "CW"));
     map.insert("LCA", ("Nicosia", "CY"));
     map.insert("PRG", ("Prague", "CZ"));
     map.insert("TXL", ("Berlin", "DE"));
@@ -121,7 +132,6 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("HKG", ("Hong Kong", "HK"));
     map.insert("TGU", ("Tegucigalpa", "HN"));
     map.insert("ZAG", ("Zagreb", "HR"));
-    map.insert("PAP", ("Port-au-Prince", "HT"));
     map.insert("BUD", ("Budapest", "HU"));
     map.insert("DPS", ("Denpasar", "ID"));
     map.insert("CGK", ("Jakarta", "ID"));
@@ -175,6 +185,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("CMN", ("Casablanca", "MA"));
     map.insert("KIV", ("Chișinău", "MD"));
     map.insert("TNR", ("Antananarivo", "MG"));
+    map.insert("SKP", ("Skopje", "MK"));
     map.insert("MDL", ("Mandalay", "MM"));
     map.insert("RGN", ("Yangon", "MM"));
     map.insert("ULN", ("Ulaanbaatar", "MN"));
@@ -187,6 +198,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("JHB", ("Johor Bahru", "MY"));
     map.insert("KUL", ("Kuala Lumpur", "MY"));
     map.insert("MPM", ("Maputo", "MZ"));
+    map.insert("WDH", ("Windhoek", "NA"));
     map.insert("NOU", ("Noumea", "NC"));
     map.insert("LOS", ("Lagos", "NG"));
     map.insert("AMS", ("Amsterdam", "NL"));
@@ -201,6 +213,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("CGY", ("Cagayan de Oro", "PH"));
     map.insert("CEB", ("Cebu", "PH"));
     map.insert("MNL", ("Manila", "PH"));
+    map.insert("CRK", ("Tarlac City", "PH"));
     map.insert("ISB", ("Islamabad", "PK"));
     map.insert("KHI", ("Karachi", "PK"));
     map.insert("LHE", ("Lahore", "PK"));
@@ -234,10 +247,12 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("TUN", ("Tunis", "TN"));
     map.insert("IST", ("Istanbul", "TR"));
     map.insert("ADB", ("Izmir", "TR"));
+    map.insert("POS", ("Port of Spain", "TT"));
     map.insert("KHH", ("Kaohsiung City", "TW"));
     map.insert("TPE", ("Taipei", "TW"));
     map.insert("DAR", ("Dar es Salaam", "TZ"));
     map.insert("KBP", ("Kyiv", "UA"));
+    map.insert("EBB", ("KAMPALA", "UG"));
     map.insert("MGM", ("Montgomery", "US"));
     map.insert("ANC", ("Anchorage", "US"));
     map.insert("PHX", ("Phoenix", "US"));
@@ -288,6 +303,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("RIC", ("Richmond", "US"));
     map.insert("SEA", ("Seattle", "US"));
     map.insert("TAS", ("Tashkent", "UZ"));
+    map.insert("DAD", ("Da Nang", "VN"));
     map.insert("HAN", ("Hanoi", "VN"));
     map.insert("SGN", ("Ho Chi Minh City", "VN"));
     map.insert("CPT", ("Cape Town", "ZA"));

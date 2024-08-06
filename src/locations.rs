@@ -1,12 +1,10 @@
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
-pub static IATA_TO_CITY_COUNTRY: Lazy<HashMap<&'static str, (&'static str, &'static str)>> = Lazy::new(|| {
-    generate_iata_to_city_map()
-});
-pub static CCA2_TO_COUNTRY_NAME: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {
-    generate_cca2_to_full_country_name_map()
-});
+pub static IATA_TO_CITY_COUNTRY: Lazy<HashMap<&'static str, (&'static str, &'static str)>> =
+    Lazy::new(generate_iata_to_city_map);
+pub static CCA2_TO_COUNTRY_NAME: Lazy<HashMap<&'static str, &'static str>> =
+    Lazy::new(generate_cca2_to_full_country_name_map);
 
 // all cloudflare IATAs to cities (defined at https://speed.cloudflare.com/locations)
 pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'static str)> {

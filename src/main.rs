@@ -318,7 +318,9 @@ fn print_test_preamble() {
         "Server Location:",
         cf_colo,
         colo_info.0,
-        locations::CCA2_TO_COUNTRY_NAME.get(colo_info.1).unwrap_or(&"UNKNOWN")
+        locations::CCA2_TO_COUNTRY_NAME
+            .get(colo_info.1)
+            .unwrap_or(&"UNKNOWN")
     );
 
     println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());

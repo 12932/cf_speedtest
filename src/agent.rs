@@ -1,5 +1,5 @@
 use rustls::crypto::CryptoProvider;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::RootCertStore;
 use std::sync::Arc;
 use std::time::Duration;
 use ureq::Agent;
@@ -12,7 +12,6 @@ pub fn create_configured_agent() -> Agent {
     root_store.roots = webpki_roots::TLS_SERVER_ROOTS.to_vec();
 
     // Create a custom crypto provider with only ChaCha20-Poly1305
-    // because its fast in all cases, compared to AES where not all hardware has accel for it
     let provider = rustls::crypto::ring::default_provider();
     let chacha_only_provider = CryptoProvider {
         cipher_suites: vec![*provider
@@ -23,15 +22,19 @@ pub fn create_configured_agent() -> Agent {
         ..provider
     };
 
-    let config = ClientConfig::builder_with_provider(Arc::new(chacha_only_provider))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+    // Create a TlsConfig using the builder
+    let tls_config = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        // Use the unversioned_rustls_crypto_provider method to pass your custom crypto provider
+        .unversioned_rustls_crypto_provider(Arc::new(chacha_only_provider))
+        .build();
 
-    ureq::builder()
-        .tls_config(Arc::new(config))
-        .timeout_connect(Duration::from_millis(CONNECT_TIMEOUT_MILLIS))
+    // Create the Agent with the TLS config
+    let agent_config = Agent::config_builder()
+        .tls_config(tls_config)
+        .timeout_connect(Some(Duration::from_millis(CONNECT_TIMEOUT_MILLIS)))
         .user_agent(OUR_USER_AGENT)
-        .build()
+        .build();
+
+    agent_config.into()
 }

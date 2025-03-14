@@ -135,9 +135,8 @@ fn get_appropriate_buff_size(speed: usize) -> u64 {
 
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
 fn get_our_ip_address_country() -> Result<String> {
-    let resp = ureq::get(CLOUDFLARE_SPEEDTEST_CGI_URL).call()?;
-    let mut body = String::new();
-    resp.into_reader().read_to_string(&mut body)?;
+    let mut resp = ureq::get(CLOUDFLARE_SPEEDTEST_CGI_URL).call()?;
+    let body: String = resp.body_mut().read_to_string()?;
 
     for line in body.lines() {
         if let Some(loc) = line.strip_prefix("loc=") {
@@ -155,21 +154,24 @@ fn get_our_ip_address_country() -> Result<String> {
 // and taking the fastest
 fn get_download_server_http_latency() -> Result<std::time::Duration> {
     let start = Instant::now();
-    let my_agent = ureq::AgentBuilder::new().build();
+
+    let my_agent = create_configured_agent();
     let mut latency_vec = Vec::new();
 
     for _ in 0..LATENCY_TEST_COUNT {
         // if vec length 2 or greater and we've spent a lot of time
-        // calculating latency, exit early (we could be on satellite or sumthin)
+        // 	calculating latency, exit early (we could be on satellite or sumthin)
         if latency_vec.len() >= 2 && start.elapsed() > std::time::Duration::from_secs(1) {
             break;
         }
 
         let now = Instant::now();
+
         let _response = my_agent
             .get(CLOUDFLARE_SPEEDTEST_CGI_URL)
             .call()?
-            .into_string()?;
+            .body_mut()
+            .read_to_string();
 
         let total_time = now.elapsed();
         latency_vec.push(total_time);
@@ -186,9 +188,14 @@ fn get_download_server_info() -> Result<std::collections::HashMap<String, String
         .call()
         .expect("Failed to get server info");
 
-    for key in resp.headers_names() {
-        if key.starts_with("cf-") {
-            server_headers.insert(key.clone(), resp.header(&key).unwrap().to_string());
+    // Using headers() instead of headers_names()
+    for header in resp.headers() {
+        let key_str = header.0.as_str();
+        if key_str.starts_with("cf-") {
+            server_headers.insert(
+                key_str.to_string(),
+                header.1.to_str().unwrap_or_default().to_string(),
+            );
         }
     }
 
@@ -217,10 +224,12 @@ fn upload_test(
             exit_signal: exit_signal.clone(),
         };
 
+        let body = ureq::SendBody::from_owned_reader(upload_helper);
+
         let resp = match agent
             .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
-            .set("Content-Type", "text/plain;charset=UTF-8")
-            .send(upload_helper)
+            .header("Content-Type", "text/plain;charset=UTF-8")
+            .send(body)
         {
             Ok(resp) => resp,
             Err(err) => {
@@ -229,8 +238,8 @@ fn upload_test(
             }
         };
 
-        // read the POST response body into the void if response is okay
-        let _ = std::io::copy(&mut resp.into_reader(), &mut std::io::sink());
+        // Process the response
+        let _ = std::io::copy(&mut resp.into_body().into_reader(), &mut std::io::sink());
 
         if exit_signal.load(Ordering::Relaxed) {
             return Ok(());
@@ -258,7 +267,8 @@ fn download_test(
         }
     };
 
-    let mut resp_reader = resp.into_reader();
+    let body = resp.into_body();
+    let mut resp_reader = body.into_reader();
     let mut total_bytes_sank: usize = 0;
 
     loop {

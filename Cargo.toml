@@ -1,6 +1,6 @@
 [package]
 name = "cf_speedtest"
-version = "0.5.0"
+version = "0.5.1"
 authors = ["https://github.com/12932"]
 repository = "https://github.com/12932/cf_speedtest"
 keywords = ["cross-platform", "speedtest", "cli", "speed", "test"]

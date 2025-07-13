@@ -111,6 +111,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("CAI", ("Cairo", "EG"));
     map.insert("BCN", ("Barcelona", "ES"));
     map.insert("MAD", ("Madrid", "ES"));
+    map.insert("ADD", ("Addis Ababa", "ET"));
     map.insert("HEL", ("Helsinki", "FI"));
     map.insert("SUV", ("Suva", "FJ"));
     map.insert("BOD", ("Bordeaux", "FR"));
@@ -129,6 +130,7 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("GUM", ("Hagatna", "GU"));
     map.insert("GEO", ("Georgetown", "GY"));
     map.insert("HKG", ("Hong Kong", "HK"));
+    map.insert("SAP", ("San Pedro Sula", "HN"));
     map.insert("TGU", ("Tegucigalpa", "HN"));
     map.insert("ZAG", ("Zagreb", "HR"));
     map.insert("BUD", ("Budapest", "HU"));
@@ -141,7 +143,6 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("TLV", ("Tel Aviv", "IL"));
     map.insert("AMD", ("Ahmedabad", "IN"));
     map.insert("BLR", ("Bangalore", "IN"));
-    map.insert("BBI", ("Bhubaneswar", "IN"));
     map.insert("IXC", ("Chandigarh", "IN"));
     map.insert("MAA", ("Chennai", "IN"));
     map.insert("HYD", ("Hyderabad", "IN"));
@@ -228,7 +229,6 @@ pub fn generate_iata_to_city_map() -> HashMap<&'static str, (&'static str, &'sta
     map.insert("KJA", ("Krasnoyarsk", "RU"));
     map.insert("DME", ("Moscow", "RU"));
     map.insert("LED", ("Saint Petersburg", "RU"));
-    map.insert("SVX", ("Yekaterinburg", "RU"));
     map.insert("KGL", ("Kigali", "RW"));
     map.insert("DMM", ("Dammam", "SA"));
     map.insert("JED", ("Jeddah", "SA"));

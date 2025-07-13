@@ -11,7 +11,8 @@ for entry in sorted_data:
     iata = entry["iata"]
     city = entry["city"]
     cca2 = entry["cca2"]
-    map_code += f'map.insert("{iata}", ("{city}", "{cca2}"));\n'
+    #map_code += f'map.insert("{iata}", ("{city}", "{cca2}"));\n'
+    map_code += f"\"{iata}\" => (\"{city}\", \"{cca2}\"),\n"
 
 print(map_code)
 with open('output.rs', 'w', encoding="utf-8") as file:

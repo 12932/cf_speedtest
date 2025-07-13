@@ -1,4 +1,3 @@
-use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -18,6 +17,7 @@ mod agent;
 use crate::agent::create_configured_agent;
 
 mod locations;
+mod table;
 #[cfg(test)]
 mod tests;
 
@@ -594,36 +594,33 @@ fn print_results_table(results: &TestResults) {
         compute_statistics(&mut down_measurements);
     let (upload_median, upload_avg, upload_p90, _, _, _) = compute_statistics(&mut up_measurements);
 
-    let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
-        .set_header(vec![
-            Cell::new(""),
-            Cell::new("Median"),
-            Cell::new("Average"),
-            Cell::new("90th pctile"),
-        ]);
+    let mut rows = vec![vec![
+        "".to_string(),
+        "Median".to_string(),
+        "Average".to_string(),
+        "90th pctile".to_string(),
+    ]];
 
     // Populate rows based on computed statistics
     if results.download_completed || !results.down_measurements.is_empty() {
-        table.add_row(vec![
-            Cell::new("DOWN"),
-            Cell::new(get_appropriate_byte_unit_rate(download_median as u64).1),
-            Cell::new(get_appropriate_byte_unit_rate(download_avg as u64).1),
-            Cell::new(get_appropriate_byte_unit_rate(download_p90 as u64).1),
+        rows.push(vec![
+            "DOWN".to_string(),
+            get_appropriate_byte_unit_rate(download_median as u64).1,
+            get_appropriate_byte_unit_rate(download_avg as u64).1,
+            get_appropriate_byte_unit_rate(download_p90 as u64).1,
         ]);
     }
 
     if results.upload_completed || !results.up_measurements.is_empty() {
-        table.add_row(vec![
-            Cell::new("UP"),
-            Cell::new(get_appropriate_byte_unit_rate(upload_median as u64).1),
-            Cell::new(get_appropriate_byte_unit_rate(upload_avg as u64).1),
-            Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),
+        rows.push(vec![
+            "UP".to_string(),
+            get_appropriate_byte_unit_rate(upload_median as u64).1,
+            get_appropriate_byte_unit_rate(upload_avg as u64).1,
+            get_appropriate_byte_unit_rate(upload_p90 as u64).1,
         ]);
     }
 
+    let table = table::format_ascii_table(rows);
     print!("\n{}\n{}\n", get_current_timestamp(), table);
 }
 

@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "cf_speedtest"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "argh",
  "chrono",

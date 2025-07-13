@@ -17,13 +17,13 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-ureq = "3.0.11"
+ureq = "3.0.12"
 chrono = "0.4.41"
 argh = "0.1.13"
-rustls = { version = "0.23.27", default-features = false, features = ["ring"] } 	# same version as ureq 
-webpki-roots = "1.0.0" 	                                                        	# same version as ureq
+rustls = { version = "0.23.29", default-features = false, features = ["ring"] } 	# same version as ureq 
+webpki-roots = "1.0.1" 	                                                        	# same version as ureq
 comfy-table = "7.1.4"
-once_cell = "1.21.1"
+once_cell = "1.21.3"
 ctrlc = "3.4.7"
 
 [profile.release]

@@ -2,12 +2,14 @@ use comfy_table::{presets::UTF8_FULL, Cell, Table};
 use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use ureq::Agent;
+
+static CTRL_C_PRESSED: AtomicBool = AtomicBool::new(false);
 
 mod args;
 use args::UserArgs;
@@ -20,6 +22,14 @@ mod locations;
 mod tests;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Clone, Default)]
+struct TestResults {
+    down_measurements: Vec<usize>,
+    up_measurements: Vec<usize>,
+    download_completed: bool,
+    upload_completed: bool,
+}
 
 static CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?measId=0";
 static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__up?measId=0";
@@ -113,14 +123,14 @@ fn get_appropriate_byte_unit(bytes: u64) -> (String, String) {
     }
 
     (
-        format!("{:.2} {}B", bytes, byte_unit),
-        format!("{:.2} {}b", bits, bit_unit),
+        format!("{bytes:.2} {byte_unit}B"),
+        format!("{bits:.2} {bit_unit}b"),
     )
 }
 
 fn get_appropriate_byte_unit_rate(bytes: u64) -> (String, String) {
     let (a, b) = get_appropriate_byte_unit(bytes);
-    (format!("{}/s", a), format!("{}it/s", b))
+    (format!("{a}/s"), format!("{b}it/s"))
 }
 
 fn get_appropriate_buff_size(speed: usize) -> u64 {
@@ -233,7 +243,9 @@ fn upload_test(
         {
             Ok(resp) => resp,
             Err(err) => {
-                eprintln!("Error in upload thread: {err}");
+                if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                    eprintln!("Error in upload thread: {err}");
+                }
                 return Ok(());
             }
         };
@@ -262,7 +274,9 @@ fn download_test(
     {
         Ok(resp) => resp,
         Err(err) => {
-            eprintln!("Error in download thread: {err}");
+            if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                eprintln!("Error in download thread: {err}");
+            }
             return Ok(());
         }
     };
@@ -381,7 +395,9 @@ where
                 ) {
                     Ok(_) => {}
                     Err(e) => {
-                        println!("Error in download test thread {i}: {e:?}");
+                        if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                            println!("Error in download test thread {i}: {e:?}");
+                        }
                         return;
                     }
                 }
@@ -399,7 +415,7 @@ where
     thread_handles
 }
 
-fn run_download_test(config: &UserArgs) -> Vec<usize> {
+fn run_download_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec<usize> {
     let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
 
@@ -431,6 +447,11 @@ fn run_download_test(config: &UserArgs) -> Vec<usize> {
         current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
         down_measurements.push(bytes_down_diff);
 
+        // Update shared results
+        if let Ok(mut shared_results) = results.try_lock() {
+            shared_results.down_measurements = down_measurements.clone();
+        }
+
         let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
         // only print progress if we are before deadline
         if get_secs_since_unix_epoch() < down_deadline {
@@ -458,10 +479,16 @@ fn run_download_test(config: &UserArgs) -> Vec<usize> {
         handle.join().expect("Couldn't join download thread");
     }
 
+    // Mark download as completed
+    if let Ok(mut shared_results) = results.lock() {
+        shared_results.down_measurements = down_measurements.clone();
+        shared_results.download_completed = true;
+    }
+
     down_measurements
 }
 
-fn run_upload_test(config: &UserArgs) -> Vec<usize> {
+fn run_upload_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec<usize> {
     let exit_signal = Arc::new(AtomicBool::new(false));
     let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let current_up_speed = Arc::new(AtomicUsize::new(0));
@@ -492,6 +519,11 @@ fn run_upload_test(config: &UserArgs) -> Vec<usize> {
         let bytes_up_diff = bytes_up - last_bytes_up;
         up_measurements.push(bytes_up_diff);
 
+        // Update shared results
+        if let Ok(mut shared_results) = results.try_lock() {
+            shared_results.up_measurements = up_measurements.clone();
+        }
+
         let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
 
         println!(
@@ -517,6 +549,12 @@ fn run_upload_test(config: &UserArgs) -> Vec<usize> {
     println!("Waiting for upload threads to finish...");
     for handle in up_handles {
         handle.join().expect("Couldn't join upload thread");
+    }
+
+    // Mark upload as completed
+    if let Ok(mut shared_results) = results.lock() {
+        shared_results.up_measurements = up_measurements.clone();
+        shared_results.upload_completed = true;
     }
 
     up_measurements
@@ -548,23 +586,9 @@ fn compute_statistics(data: &mut [usize]) -> (f64, f64, usize, usize, usize, usi
     (median, average, data[p90_index], data[p99_index], min, max)
 }
 
-fn main() {
-    let config: UserArgs = argh::from_env();
-    config.validate().expect("Invalid arguments");
-
-    print_test_preamble();
-
-    let mut down_measurements: Vec<usize> = Vec::new();
-    let mut up_measurements: Vec<usize> = Vec::new();
-
-    if !config.upload_only {
-        down_measurements = run_download_test(&config);
-    }
-
-    if !config.download_only {
-        println!("Starting upload tests...");
-        up_measurements = run_upload_test(&config);
-    }
+fn print_results_table(results: &TestResults) {
+    let mut down_measurements = results.down_measurements.clone();
+    let mut up_measurements = results.up_measurements.clone();
 
     let (download_median, download_avg, download_p90, _, _, _) =
         compute_statistics(&mut down_measurements);
@@ -582,19 +606,58 @@ fn main() {
         ]);
 
     // Populate rows based on computed statistics
-    table.add_row(vec![
-        Cell::new("DOWN"),
-        Cell::new(get_appropriate_byte_unit_rate(download_median as u64).1),
-        Cell::new(get_appropriate_byte_unit_rate(download_avg as u64).1),
-        Cell::new(get_appropriate_byte_unit_rate(download_p90 as u64).1),
-    ]);
+    if results.download_completed || !results.down_measurements.is_empty() {
+        table.add_row(vec![
+            Cell::new("DOWN"),
+            Cell::new(get_appropriate_byte_unit_rate(download_median as u64).1),
+            Cell::new(get_appropriate_byte_unit_rate(download_avg as u64).1),
+            Cell::new(get_appropriate_byte_unit_rate(download_p90 as u64).1),
+        ]);
+    }
 
-    table.add_row(vec![
-        Cell::new("UP"),
-        Cell::new(get_appropriate_byte_unit_rate(upload_median as u64).1),
-        Cell::new(get_appropriate_byte_unit_rate(upload_avg as u64).1),
-        Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),
-    ]);
+    if results.upload_completed || !results.up_measurements.is_empty() {
+        table.add_row(vec![
+            Cell::new("UP"),
+            Cell::new(get_appropriate_byte_unit_rate(upload_median as u64).1),
+            Cell::new(get_appropriate_byte_unit_rate(upload_avg as u64).1),
+            Cell::new(get_appropriate_byte_unit_rate(upload_p90 as u64).1),
+        ]);
+    }
 
     print!("\n{}\n{}\n", get_current_timestamp(), table);
+}
+
+fn main() {
+    let config: UserArgs = argh::from_env();
+    config.validate().expect("Invalid arguments");
+
+    let results = Arc::new(Mutex::new(TestResults::default()));
+    let results_clone = Arc::clone(&results);
+
+    // Set up CTRL-C handler
+    ctrlc::set_handler(move || {
+        CTRL_C_PRESSED.store(true, Ordering::Relaxed);
+        println!("\n\nReceived CTRL-C, printing current results...");
+        if let Ok(current_results) = results_clone.lock() {
+            print_results_table(&current_results);
+        }
+        std::process::exit(0);
+    })
+    .expect("Error setting CTRL-C handler");
+
+    print_test_preamble();
+
+    if !config.upload_only {
+        run_download_test(&config, Arc::clone(&results));
+    }
+
+    if !config.download_only {
+        println!("Starting upload tests...");
+        run_upload_test(&config, Arc::clone(&results));
+    }
+
+    // Print final results
+    if let Ok(final_results) = results.lock() {
+        print_results_table(&final_results);
+    };
 }

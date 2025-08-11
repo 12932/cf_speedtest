@@ -99,7 +99,7 @@ jobs:
         features: ["--all-features", "--no-default-features"]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4.2.0
+        uses: actions/checkout@v4.3.0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable

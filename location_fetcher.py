@@ -1,3 +1,9 @@
+# /// script
+# dependencies = [
+#   "requests",
+# ]
+# ///
+
 import requests
 
 r = requests.get("https://speed.cloudflare.com/locations")

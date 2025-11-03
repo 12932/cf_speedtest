@@ -75,7 +75,7 @@ pub fn format_ascii_table(rows: Vec<Vec<String>>) -> String {
             result.push('┴');
         }
     }
-    result.push_str("┘");
+    result.push('┘');
 
     result
 }

@@ -571,7 +571,7 @@ fn compute_statistics(data: &mut [usize]) -> (f64, f64, usize, usize, usize, usi
     let sum: usize = data.iter().sum();
     let average = sum as f64 / len as f64;
 
-    let median = if len % 2 == 0 {
+    let median = if len.is_multiple_of(2) {
         (data[len / 2 - 1] + data[len / 2]) as f64 / 2.0
     } else {
         data[len / 2] as f64

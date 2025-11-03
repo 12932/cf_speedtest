@@ -37,7 +37,7 @@ jobs:
         uses: fkirc/skip-duplicate-actions@v5.3.1
         with:
           skip_after_successful_duplicate: "true"
-          paths: '[".cargo/**", ".github/workflows/ci.yml", "sample_configs/**", "src/**", "tests/**", "build.rs", "Cargo.lock", "Cargo.toml", "clippy.toml", "rustfmt.toml", "Cross.toml"]'
+          paths: '[".cargo/**", ".github/workflows/rust.yml", "sample_configs/**", "src/**", "tests/**", "build.rs", "Cargo.lock", "Cargo.toml", "clippy.toml", "rustfmt.toml", "Cross.toml"]'
           do_not_skip: '["workflow_dispatch", "push"]'
 
   # Runs rustfmt + tests on the main supported platforms.
@@ -63,7 +63,6 @@ jobs:
               os: "ubuntu-latest",
               target: "i686-unknown-linux-gnu",
               cross: true,
-              rust: stable,
             }
           - {
               os: "windows-2019",
@@ -71,30 +70,36 @@ jobs:
               cross: false,
             }
           - {
+              os: "macos-latest",
+              target: "x86_64-apple-darwin",
+              cross: false,
+            }
+          - {
+              os: "macos-latest",
+              target: "aarch64-apple-darwin",
+              cross: false,
+            }
+          - {
               os: "ubuntu-latest",
               target: "x86_64-unknown-linux-musl",
               cross: true,
-              rust: stable,
             }
           - {
               os: "ubuntu-latest",
               target: "i686-unknown-linux-musl",
               cross: true,
-              rust: stable,
             }
           # armv6
           - {
               os: "ubuntu-latest",
               target: "arm-unknown-linux-musleabi",
               cross: true,
-              rust: stable,
             }
           # arm5
           - {
               os: "ubuntu-latest",
               target: "armv5te-unknown-linux-musleabi",
               cross: true,
-              rust: stable,
             }
         features: ["--all-features", "--no-default-features"]
     steps:
@@ -105,7 +110,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          components: rustfmt
+          components: rustfmt, clippy
           target: ${{ matrix.info.target }}
 
       - name: Enable Rust cache
@@ -114,24 +119,26 @@ jobs:
         with:
           shared-key: build-cache-${{ matrix.info.target }}
 
+      - name: Install cross
+        if: ${{ matrix.info.cross }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
       - name: Check cargo fmt
         run: cargo fmt --all -- --check
 
+      - name: Run clippy
+        if: ${{ !matrix.info.cross }}
+        run: cargo clippy --all-features --target=${{ matrix.info.target }} -- -D warnings
+
       - name: Build tests
-        uses: actions-rs/cargo@v1.0.3
-        with:
-          command: test
-          args: --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
-          use-cross: ${{ matrix.info.cross }}
+        run: ${{ matrix.info.cross && 'cross' || 'cargo' }} test --no-run --locked ${{ matrix.features }} --target=${{ matrix.info.target }}
         env:
           RUST_BACKTRACE: full
 
       - name: Run tests
-        uses: actions-rs/cargo@v1.0.3
-        with:
-          command: test
-          args: --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
-          use-cross: ${{ matrix.info.cross }}
+        run: ${{ matrix.info.cross && 'cross' || 'cargo' }} test --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
         env:
           RUST_BACKTRACE: full
 

@@ -71,12 +71,12 @@ jobs:
               cross: false,
             }
           - {
-              os: "macos-latest",
+              os: "macos-13",
               target: "x86_64-apple-darwin",
               cross: false,
             }
           - {
-              os: "macos-latest",
+              os: "macos-15",
               target: "aarch64-apple-darwin",
               cross: false,
             }
@@ -132,7 +132,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        if: ${{ !matrix.info.cross && matrix.info.target != 'aarch64-apple-darwin' }}
+        if: ${{ !matrix.info.cross }}
         run: cargo clippy --all-features --target=${{ matrix.info.target }} -- -D warnings
 
       - name: Build tests

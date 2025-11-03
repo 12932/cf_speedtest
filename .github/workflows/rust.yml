@@ -76,11 +76,6 @@ jobs:
               cross: false,
             }
           - {
-              os: "macos-15",
-              target: "aarch64-apple-darwin",
-              cross: false,
-            }
-          - {
               os: "ubuntu-latest",
               target: "x86_64-unknown-linux-musl",
               cross: true,

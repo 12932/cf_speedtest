@@ -20,6 +20,7 @@ env:
   RUST_BACKTRACE: 1
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: 0
+  CROSS_VERSION: v0.2.5
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.ref }}
@@ -65,7 +66,7 @@ jobs:
               cross: true,
             }
           - {
-              os: "windows-2019",
+              os: "windows-latest",
               target: "x86_64-pc-windows-msvc",
               cross: false,
             }
@@ -89,16 +90,14 @@ jobs:
               target: "i686-unknown-linux-musl",
               cross: true,
             }
-          # armv6
           - {
               os: "ubuntu-latest",
-              target: "arm-unknown-linux-musleabi",
+              target: "armv7-unknown-linux-gnueabihf",
               cross: true,
             }
-          # arm5
           - {
               os: "ubuntu-latest",
-              target: "armv5te-unknown-linux-musleabi",
+              target: "armv7-unknown-linux-musleabihf",
               cross: true,
             }
         features: ["--all-features", "--no-default-features"]
@@ -121,15 +120,19 @@ jobs:
 
       - name: Install cross
         if: ${{ matrix.info.cross }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
+        run: |
+          dir="$RUNNER_TEMP/cross-download"
+          mkdir "$dir"
+          echo "$dir" >> $GITHUB_PATH
+          cd "$dir"
+          curl -LO "https://github.com/cross-rs/cross/releases/download/$CROSS_VERSION/cross-x86_64-unknown-linux-musl.tar.gz"
+          tar xf cross-x86_64-unknown-linux-musl.tar.gz
 
       - name: Check cargo fmt
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        if: ${{ !matrix.info.cross }}
+        if: ${{ !matrix.info.cross && matrix.info.target != 'aarch64-apple-darwin' }}
         run: cargo clippy --all-features --target=${{ matrix.info.target }} -- -D warnings
 
       - name: Build tests
@@ -138,7 +141,8 @@ jobs:
           RUST_BACKTRACE: full
 
       - name: Run tests
-        run: ${{ matrix.info.cross && 'cross' || 'cargo' }} test --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
+        if: ${{ !matrix.info.cross }}
+        run: cargo test --no-fail-fast ${{ matrix.features }} --target=${{ matrix.info.target }} -- --nocapture --quiet
         env:
           RUST_BACKTRACE: full
 

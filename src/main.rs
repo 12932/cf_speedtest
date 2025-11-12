@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,6 +14,8 @@ use args::UserArgs;
 
 mod agent;
 use crate::agent::create_configured_agent;
+
+mod raw_socket;
 
 mod locations;
 mod table;
@@ -259,61 +260,73 @@ fn upload_test(
     }
 }
 
-// download some bytes from cloudflare
+// download some bytes from cloudflare using raw encrypted byte reading
 fn download_test(
     bytes_to_request: usize,
     total_bytes_counter: &Arc<AtomicUsize>,
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let agent: Agent = create_configured_agent();
-
-    let resp = match agent
-        .get(format!("{CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL}&bytes={bytes_to_request}").as_str())
-        .call()
-    {
-        Ok(resp) => resp,
-        Err(err) => {
-            if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
-                eprintln!("Error in download thread: {err}");
-            }
-            return Ok(());
-        }
-    };
-
-    let body = resp.into_body();
-    let mut resp_reader = body.into_reader();
-    let mut total_bytes_sank: usize = 0;
-
+    // Keep making new requests until exit_signal is set
     loop {
         // exit if we have passed deadline
         if exit_signal.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        // if we are fast, take big chunks
-        // if we are slow, take small chunks
-        let current_recv_buff =
-            get_appropriate_buff_size(current_down_speed.load(Ordering::Relaxed));
+        // Establish connection, perform TLS handshake, send HTTP request
+        let mut conn = match raw_socket::RawDownloadConnection::connect(
+            CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL,
+            bytes_to_request,
+        ) {
+            Ok(conn) => conn,
+            Err(err) => {
+                if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                    eprintln!("Error in download thread: {err}");
+                }
+                return Ok(());
+            }
+        };
 
-        // copy bytes into the void
-        let bytes_sank = std::io::copy(
-            &mut resp_reader.by_ref().take(current_recv_buff),
-            &mut std::io::sink(),
-        )? as usize;
+        let mut total_bytes_sank: usize = 0;
 
-        //println!("Thread {:?} sank {} bytes", std::thread::current().id(), bytes_sank);
-
-        if bytes_sank == 0 {
-            if total_bytes_sank == 0 {
-                eprintln!("Cloudflare sent an empty response?");
+        // Read from this connection until it's exhausted
+        loop {
+            // exit if we have passed deadline
+            if exit_signal.load(Ordering::Relaxed) {
+                return Ok(());
             }
 
-            return Ok(());
-        }
+            // if we are fast, take big chunks
+            // if we are slow, take small chunks
+            let current_recv_buff =
+                get_appropriate_buff_size(current_down_speed.load(Ordering::Relaxed)) as usize;
 
-        total_bytes_sank += bytes_sank;
-        total_bytes_counter.fetch_add(bytes_sank, Ordering::SeqCst);
+            // Read raw encrypted bytes directly from socket (no TLS decryption!)
+            let mut buf = vec![0u8; current_recv_buff];
+            let bytes_read = match conn.read_encrypted_bytes(&mut buf) {
+                Ok(n) => n,
+                Err(err) => {
+                    if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                        eprintln!("Error reading from socket: {err}");
+                    }
+                    // Connection error, break to create a new connection
+                    break;
+                }
+            };
+
+            if bytes_read == 0 {
+                if total_bytes_sank == 0 {
+                    eprintln!("Cloudflare sent an empty response?");
+                }
+                // Connection exhausted, break inner loop to make a new request
+                break;
+            }
+
+            // Count the encrypted bytes we received (wire bytes including TLS overhead)
+            total_bytes_sank += bytes_read;
+            total_bytes_counter.fetch_add(bytes_read, Ordering::SeqCst);
+        }
     }
 }
 

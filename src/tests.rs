@@ -34,7 +34,7 @@ fn test_download() {
         }
     }
 
-    assert_eq!(total_bytes_counter.load(Ordering::SeqCst), BYTES_TO_REQUEST);
+    assert!(total_bytes_counter.load(Ordering::SeqCst) >= BYTES_TO_REQUEST);
 
     exit_signal.store(true, Ordering::SeqCst);
     let _ = _handle.join();

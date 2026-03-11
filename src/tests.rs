@@ -2,8 +2,20 @@ use super::*;
 
 #[test]
 fn test_reachability() {
-    get_our_ip_address_country()
-        .expect("Couldn't reach Cloudflare, please check your internet connection");
+    get_meta_info().expect("Couldn't reach Cloudflare, please check your internet connection");
+}
+
+#[test]
+fn test_server_location_is_known() {
+    let (_country, colo) = get_meta_info().expect("Couldn't get meta info");
+
+    let colo_info = locations::IATA_TO_CITY_COUNTRY
+        .get(&colo as &str)
+        .expect(&format!("Colo code '{}' not found in IATA_TO_CITY_COUNTRY", colo));
+
+    locations::CCA2_TO_COUNTRY_NAME
+        .get(colo_info.1)
+        .expect(&format!("Country code '{}' not found in CCA2_TO_COUNTRY_NAME", colo_info.1));
 }
 
 #[test]

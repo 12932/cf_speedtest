@@ -34,9 +34,9 @@ struct TestResults {
 
 static CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?measId=0";
 static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__up?measId=0";
-static CLOUDFLARE_SPEEDTEST_SERVER_URL: &str =
-    "https://speed.cloudflare.com/__down?measId=0&bytes=0";
 static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
+static CLOUDFLARE_SPEEDTEST_META_URL: &str = "https://speed.cloudflare.com/meta";
+static CLOUDFLARE_SPEEDTEST_REFERER: &str = "https://speed.cloudflare.com/";
 static OUR_USER_AGENT: &str = concat!(
     "cf_speedtest (",
     env!("CARGO_PKG_VERSION"),
@@ -145,20 +145,34 @@ fn get_appropriate_buff_size(speed: usize) -> u64 {
 }
 
 // Use cloudflare's cdn-cgi endpoint to get our ip address country
-fn get_our_ip_address_country() -> Result<String> {
-    let mut resp = ureq::get(CLOUDFLARE_SPEEDTEST_CGI_URL).call()?;
-    let body: String = resp.body_mut().read_to_string()?;
+/// Extract a JSON string value by key, e.g. extract_json_string(json, "country") for "country":"AU"
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\":\"", key);
+    let start = json.find(&pattern)? + pattern.len();
+    let end = start + json[start..].find('"')?;
+    Some(json[start..end].to_string())
+}
 
-    for line in body.lines() {
-        if let Some(loc) = line.strip_prefix("loc=") {
-            return Ok(loc.to_string());
-        }
+/// Returns (user_country, colo_iata) from the /meta endpoint
+fn get_meta_info() -> Result<(String, String)> {
+    let resp = ureq::get(CLOUDFLARE_SPEEDTEST_META_URL)
+        .header("Referer", CLOUDFLARE_SPEEDTEST_REFERER)
+        .call()?;
+    let body: String = resp.into_body().read_to_string()?;
+
+    let country = extract_json_string(&body, "country");
+    // colo is nested: "colo":{"iata":"PER",...}
+    let colo_iata = body
+        .find("\"colo\":{")
+        .and_then(|pos| extract_json_string(&body[pos..], "iata"));
+
+    match (country, colo_iata) {
+        (Some(c), Some(i)) => Ok((c, i)),
+        _ => panic!(
+            "Could not parse /meta response\n\
+            Please update to the latest version and make a Github issue if the issue persists"
+        ),
     }
-
-    panic!(
-        "Could not find loc= in cdn-cgi response\n
-			Please update to the latest version and make a Github issue if the issue persists"
-    );
 }
 
 // Get http latency by requesting the cgi endpoint 8 times
@@ -190,27 +204,6 @@ fn get_download_server_http_latency() -> Result<std::time::Duration> {
 
     let best_time = latency_vec.iter().min().unwrap().to_owned();
     Ok(best_time)
-}
-
-// return all cloufdlare headers from a request
-fn get_download_server_info() -> Result<std::collections::HashMap<String, String>> {
-    let mut server_headers = std::collections::HashMap::new();
-    let resp = ureq::get(CLOUDFLARE_SPEEDTEST_SERVER_URL)
-        .call()
-        .expect("Failed to get server info");
-
-    // Using headers() instead of headers_names()
-    for header in resp.headers() {
-        let key_str = header.0.as_str();
-        if key_str.starts_with("cf-") {
-            server_headers.insert(
-                key_str.to_string(),
-                header.1.to_str().unwrap_or_default().to_string(),
-            );
-        }
-    }
-
-    Ok(server_headers)
 }
 
 fn get_current_timestamp() -> String {
@@ -333,17 +326,14 @@ fn download_test(
 fn print_test_preamble() {
     println!("{:<32} {}", "Start:", get_current_timestamp());
 
-    let our_country = get_our_ip_address_country().expect("Couldn't get our country");
+    let (our_country, cf_colo) = get_meta_info().expect("Couldn't get meta info");
     let our_country_full = locations::CCA2_TO_COUNTRY_NAME.get(&our_country as &str);
     let latency = get_download_server_http_latency().expect("Couldn't get server latency");
-    let headers = get_download_server_info().expect("Couldn't get download server info");
 
-    let unknown_colo = &"???".to_owned();
-    let unknown_colo_info = &("UNKNOWN", "UNKNOWN");
-    let cf_colo = headers.get("cf-meta-colo").unwrap_or(unknown_colo);
+    let unknown_colo_info = ("UNKNOWN", "UNKNOWN");
     let colo_info = locations::IATA_TO_CITY_COUNTRY
-        .get(cf_colo as &str)
-        .unwrap_or(unknown_colo_info);
+        .get(&cf_colo as &str)
+        .unwrap_or(&unknown_colo_info);
 
     println!(
         "{:<32} {}",

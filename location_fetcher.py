@@ -6,7 +6,10 @@
 
 import requests
 
-r = requests.get("https://speed.cloudflare.com/locations")
+r = requests.get(
+    "https://speed.cloudflare.com/locations",
+    headers={"Referer": "https://speed.cloudflare.com/"},
+)
 locs_json = r.json()
 
 sorted_data = sorted(locs_json, key=lambda x: x['cca2'], reverse=False)

@@ -1,10 +1,10 @@
-use rustls::crypto::CryptoProvider;
 use rustls::{ClientConfig, ClientConnection, RootCertStore};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::args::TlsCipher;
 use crate::{CONNECT_TIMEOUT_MILLIS, OUR_USER_AGENT};
 
 pub struct RawDownloadConnection {
@@ -15,7 +15,7 @@ pub struct RawDownloadConnection {
 impl RawDownloadConnection {
     /// Establish connection, perform TLS handshake, send HTTP request
     /// After this, the connection is ready to read raw encrypted bytes from socket
-    pub fn connect(url: &str, bytes_to_request: usize) -> std::io::Result<Self> {
+    pub fn connect(url: &str, bytes_to_request: usize, cipher: TlsCipher) -> std::io::Result<Self> {
         // Parse URL
         let url_parsed = url.strip_prefix("https://").ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidInput, "URL must be https")
@@ -33,25 +33,16 @@ impl RawDownloadConnection {
         tcp_stream.set_write_timeout(Some(Duration::from_millis(CONNECT_TIMEOUT_MILLIS)))?;
         tcp_stream.set_nodelay(true)?;
 
-        // Setup TLS config (matching agent.rs)
         let mut root_store = RootCertStore::empty();
         root_store.roots = webpki_roots::TLS_SERVER_ROOTS.to_vec();
 
-        let provider = rustls::crypto::ring::default_provider();
-        let chacha_only_provider = CryptoProvider {
-            cipher_suites: vec![*provider
-                .cipher_suites
-                .iter()
-                .find(|&&cs| cs.suite() == rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256)
-                .expect("ChaCha20-Poly1305 cipher suite not found")],
-            ..provider
-        };
-
-        let config = ClientConfig::builder_with_provider(Arc::new(chacha_only_provider))
-            .with_safe_default_protocol_versions()
-            .expect("Failed to configure protocol versions")
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        let config = ClientConfig::builder_with_provider(Arc::new(
+            crate::agent::crypto_provider_for(cipher),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("Failed to configure protocol versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
 
         // Create TLS connection
         let server_name =

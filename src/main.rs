@@ -2,15 +2,27 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::vec;
+use std::time::{Duration, Instant};
 use ureq::Agent;
 
 static CTRL_C_PRESSED: AtomicBool = AtomicBool::new(false);
 
+static OUR_USER_AGENT: &str = concat!(
+    "cf_speedtest (",
+    env!("CARGO_PKG_VERSION"),
+    ") https://github.com/12932/cf_speedtest"
+);
+
+static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
+static LATENCY_TEST_COUNT: u8 = 8;
+static NEW_METAL_SLEEP_MILLIS: u64 = 250;
+// Upper bound on total ramp-up time. We pick a per-thread stagger of
+// TARGET_TOTAL_STAGGER_MS / threads, clamped to [MIN, NEW_METAL_SLEEP_MILLIS].
+static TARGET_TOTAL_STAGGER_MS: u64 = 4000;
+static MIN_STAGGER_MS: u64 = 20;
+
 mod args;
-use args::UserArgs;
+use args::{TlsCipher, UserArgs};
 
 mod agent;
 use crate::agent::create_configured_agent;
@@ -32,20 +44,44 @@ struct TestResults {
     upload_completed: bool,
 }
 
-static CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL: &str = "https://speed.cloudflare.com/__down?measId=0";
-static CLOUDFLARE_SPEEDTEST_UPLOAD_URL: &str = "https://speed.cloudflare.com/__up?measId=0";
-static CLOUDFLARE_SPEEDTEST_CGI_URL: &str = "https://speed.cloudflare.com/cdn-cgi/trace";
-static CLOUDFLARE_SPEEDTEST_META_URL: &str = "https://speed.cloudflare.com/meta";
-static CLOUDFLARE_SPEEDTEST_REFERER: &str = "https://speed.cloudflare.com/";
-static OUR_USER_AGENT: &str = concat!(
-    "cf_speedtest (",
-    env!("CARGO_PKG_VERSION"),
-    ") https://github.com/12932/cf_speedtest"
-);
+struct PreambleData {
+    timestamp: String,
+    user_country_full: String,
+    server_iata: String,
+    server_city: String,
+    server_country: String,
+    latency: Duration,
+    jitter: Duration,
+}
 
-static CONNECT_TIMEOUT_MILLIS: u64 = 9600;
-static LATENCY_TEST_COUNT: u8 = 8;
-static NEW_METAL_SLEEP_MILLIS: u32 = 250;
+struct SpeedtestResult {
+    timestamp: String,
+    server_iata: String,
+    server_city: String,
+    server_country: String,
+    user_country: String,
+    latency_ms: f64,
+    jitter_ms: f64,
+    download_median_bps: u64,
+    download_avg_bps: u64,
+    download_p90_bps: u64,
+    upload_median_bps: u64,
+    upload_avg_bps: u64,
+    upload_p90_bps: u64,
+}
+
+impl SpeedtestResult {
+    fn bps_to_mbps(bps: u64) -> f64 {
+        bps as f64 * 8.0 / 1_000_000.0
+    }
+}
+
+struct UploadHelper {
+    bytes_to_send: usize,
+    byte_ctr: Arc<AtomicUsize>,
+    total_uploaded_counter: Arc<AtomicUsize>,
+    exit_signal: Arc<AtomicBool>,
+}
 
 impl std::io::Read for UploadHelper {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -63,20 +99,6 @@ impl std::io::Read for UploadHelper {
             .fetch_add(buf.len(), Ordering::SeqCst);
         Ok(buf.len())
     }
-}
-
-struct UploadHelper {
-    bytes_to_send: usize,
-    byte_ctr: Arc<AtomicUsize>,
-    total_uploaded_counter: Arc<AtomicUsize>,
-    exit_signal: Arc<AtomicBool>,
-}
-
-fn get_secs_since_unix_epoch() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
 }
 
 // Default test duration + a little bit more if we have extra threads
@@ -144,7 +166,6 @@ fn get_appropriate_buff_size(speed: usize) -> u64 {
     }
 }
 
-// Use cloudflare's cdn-cgi endpoint to get our ip address country
 /// Extract a JSON string value by key, e.g. extract_json_string(json, "country") for "country":"AU"
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\":\"", key);
@@ -154,9 +175,11 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 }
 
 /// Returns (user_country, colo_iata) from the /meta endpoint
-fn get_meta_info() -> Result<(String, String)> {
-    let resp = ureq::get(CLOUDFLARE_SPEEDTEST_META_URL)
-        .header("Referer", CLOUDFLARE_SPEEDTEST_REFERER)
+fn get_meta_info(server: &str, cipher: TlsCipher) -> Result<(String, String)> {
+    let agent = create_configured_agent(cipher);
+    let resp = agent
+        .get(format!("{server}/meta"))
+        .header("Referer", format!("{server}/"))
         .call()?;
     let body: String = resp.into_body().read_to_string()?;
 
@@ -168,42 +191,53 @@ fn get_meta_info() -> Result<(String, String)> {
 
     match (country, colo_iata) {
         (Some(c), Some(i)) => Ok((c, i)),
-        _ => panic!(
-            "Could not parse /meta response\n\
+        _ => Err("Could not parse /meta response. \
             Please update to the latest version and make a Github issue if the issue persists"
-        ),
+            .into()),
     }
 }
 
-// Get http latency by requesting the cgi endpoint 8 times
-// and taking the fastest
-fn get_download_server_http_latency() -> Result<std::time::Duration> {
+// Compute jitter: mean absolute difference between consecutive latency samples
+// Skips the first sample (TLS handshake warmup)
+fn compute_jitter(latency_samples: &[Duration]) -> Duration {
+    if latency_samples.len() <= 2 {
+        return Duration::ZERO;
+    }
+    let samples = &latency_samples[1..];
+    let diffs = samples.windows(2).map(|w| w[1].abs_diff(w[0]));
+    let count = samples.len() - 1;
+    let total: Duration = diffs.sum();
+    total / count as u32
+}
+
+// Get http latency and jitter by requesting the cgi endpoint 8 times
+// Latency = fastest sample, Jitter = mean absolute difference between consecutive samples (skipping first)
+fn get_latency_and_jitter(server: &str, cipher: TlsCipher) -> Result<(Duration, Duration)> {
     let start = Instant::now();
 
-    let my_agent = create_configured_agent();
+    let my_agent = create_configured_agent(cipher);
+    let cgi_url = format!("{server}/cdn-cgi/trace");
     let mut latency_vec = Vec::new();
 
     for _ in 0..LATENCY_TEST_COUNT {
         // if vec length 2 or greater and we've spent a lot of time
         // 	calculating latency, exit early (we could be on satellite or sumthin)
-        if latency_vec.len() >= 2 && start.elapsed() > std::time::Duration::from_secs(1) {
+        if latency_vec.len() >= 2 && start.elapsed() > Duration::from_secs(1) {
             break;
         }
 
         let now = Instant::now();
 
-        let _response = my_agent
-            .get(CLOUDFLARE_SPEEDTEST_CGI_URL)
-            .call()?
-            .body_mut()
-            .read_to_string();
+        let _response = my_agent.get(&cgi_url).call()?.body_mut().read_to_string();
 
         let total_time = now.elapsed();
         latency_vec.push(total_time);
     }
 
     let best_time = latency_vec.iter().min().unwrap().to_owned();
-    Ok(best_time)
+    let jitter = compute_jitter(&latency_vec);
+
+    Ok((best_time, jitter))
 }
 
 fn get_current_timestamp() -> String {
@@ -213,12 +247,15 @@ fn get_current_timestamp() -> String {
 }
 
 fn upload_test(
+    server: &str,
+    cipher: TlsCipher,
     bytes: usize,
     total_up_bytes_counter: &Arc<AtomicUsize>,
     _current_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
-    let agent: Agent = create_configured_agent();
+    let agent: Agent = create_configured_agent(cipher);
+    let upload_url = format!("{server}/__up?measId=0");
 
     loop {
         let upload_helper = UploadHelper {
@@ -231,7 +268,7 @@ fn upload_test(
         let body = ureq::SendBody::from_owned_reader(upload_helper);
 
         let resp = match agent
-            .post(CLOUDFLARE_SPEEDTEST_UPLOAD_URL)
+            .post(&upload_url)
             .header("Content-Type", "text/plain;charset=UTF-8")
             .send(body)
         {
@@ -253,13 +290,16 @@ fn upload_test(
     }
 }
 
-// download some bytes from cloudflare using raw encrypted byte reading
+// download some bytes from the speedtest server using raw encrypted byte reading
 fn download_test(
+    server: &str,
+    cipher: TlsCipher,
     bytes_to_request: usize,
     total_bytes_counter: &Arc<AtomicUsize>,
     current_down_speed: &Arc<AtomicUsize>,
     exit_signal: &Arc<AtomicBool>,
 ) -> Result<()> {
+    let download_url = format!("{server}/__down?measId=0");
     // Keep making new requests until exit_signal is set
     loop {
         // exit if we have passed deadline
@@ -269,8 +309,9 @@ fn download_test(
 
         // Establish connection, perform TLS handshake, send HTTP request
         let mut conn = match raw_socket::RawDownloadConnection::connect(
-            CLOUDFLARE_SPEEDTEST_DOWNLOAD_URL,
+            &download_url,
             bytes_to_request,
+            cipher,
         ) {
             Ok(conn) => conn,
             Err(err) => {
@@ -282,6 +323,7 @@ fn download_test(
         };
 
         let mut total_bytes_sank: usize = 0;
+        let mut buf = vec![0u8; 16384]; // pre-allocate at max buffer size
 
         // Read from this connection until it's exhausted
         loop {
@@ -296,8 +338,7 @@ fn download_test(
                 get_appropriate_buff_size(current_down_speed.load(Ordering::Relaxed)) as usize;
 
             // Read raw encrypted bytes directly from socket (no TLS decryption!)
-            let mut buf = vec![0u8; current_recv_buff];
-            let bytes_read = match conn.read_encrypted_bytes(&mut buf) {
+            let bytes_read = match conn.read_encrypted_bytes(&mut buf[..current_recv_buff]) {
                 Ok(n) => n,
                 Err(err) => {
                     if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
@@ -323,34 +364,53 @@ fn download_test(
     }
 }
 
-fn print_test_preamble() {
-    println!("{:<32} {}", "Start:", get_current_timestamp());
-
-    let (our_country, cf_colo) = get_meta_info().expect("Couldn't get meta info");
-    let our_country_full = locations::CCA2_TO_COUNTRY_NAME.get(&our_country as &str);
-    let latency = get_download_server_http_latency().expect("Couldn't get server latency");
+fn collect_preamble_data(server: &str, cipher: TlsCipher) -> PreambleData {
+    let timestamp = get_current_timestamp();
+    let (user_country, server_iata) =
+        get_meta_info(server, cipher).expect("Couldn't get meta info");
+    let user_country_full = locations::CCA2_TO_COUNTRY_NAME
+        .get(&user_country as &str)
+        .unwrap_or(&"UNKNOWN")
+        .to_string();
+    let (latency, jitter) =
+        get_latency_and_jitter(server, cipher).expect("Couldn't get server latency");
 
     let unknown_colo_info = ("UNKNOWN", "UNKNOWN");
     let colo_info = locations::IATA_TO_CITY_COUNTRY
-        .get(&cf_colo as &str)
+        .get(&server_iata as &str)
         .unwrap_or(&unknown_colo_info);
 
+    let server_city = colo_info.0.to_string();
+    let server_country = locations::CCA2_TO_COUNTRY_NAME
+        .get(colo_info.1)
+        .unwrap_or(&"UNKNOWN")
+        .to_string();
+
+    PreambleData {
+        timestamp,
+        user_country_full,
+        server_iata,
+        server_city,
+        server_country,
+        latency,
+        jitter,
+    }
+}
+
+fn print_preamble(data: &PreambleData) {
     println!(
-        "{:<32} {}",
-        "Your Location:",
-        our_country_full.unwrap_or(&"UNKNOWN")
+        "{:<32} cf_speedtest v{}",
+        "Version:",
+        env!("CARGO_PKG_VERSION")
     );
+    println!("{:<32} {}", "Start:", data.timestamp);
+    println!("{:<32} {}", "Your Location:", data.user_country_full);
     println!(
         "{:<32} {} - {}, {}",
-        "Server Location:",
-        cf_colo,
-        colo_info.0,
-        locations::CCA2_TO_COUNTRY_NAME
-            .get(colo_info.1)
-            .unwrap_or(&"UNKNOWN")
+        "Server Location:", data.server_iata, data.server_city, data.server_country
     );
-
-    println!("{:<32} {:.2}ms\n", "Latency (HTTP):", latency.as_millis());
+    println!("{:<32} {}ms", "Latency (HTTP):", data.latency.as_millis());
+    println!("{:<32} {}ms\n", "Jitter (HTTP):", data.jitter.as_millis());
 }
 
 // Spawn a given amount of threads to run a specific test
@@ -375,40 +435,34 @@ where
 {
     let mut thread_handles = vec![];
 
+    let per_thread_stagger_ms = (TARGET_TOTAL_STAGGER_MS / threads_to_spawn.max(1) as u64)
+        .clamp(MIN_STAGGER_MS, NEW_METAL_SLEEP_MILLIS);
+
     for i in 0..threads_to_spawn {
         let target_test_clone = Arc::clone(&target_test);
-        let total_downloaded_bytes_counter = Arc::clone(&total_bytes_counter.clone());
-        let current_down_clone = Arc::clone(&current_speed.clone());
-        let exit_signal_clone = Arc::clone(&exit_signal.clone());
+        let total_downloaded_bytes_counter = Arc::clone(total_bytes_counter);
+        let current_down_clone = Arc::clone(current_speed);
+        let exit_signal_clone = Arc::clone(exit_signal);
         let handle = std::thread::spawn(move || {
             if i > 0 {
-                // sleep a little to hit a new cloudflare metal
-                // (each metal will throttle to 1 gigabit)
+                // sleep a little so each connection lands on a new cloudflare metal
+                // (each metal throttles to ~1 gigabit per flow)
                 std::thread::sleep(std::time::Duration::from_millis(
-                    (i * NEW_METAL_SLEEP_MILLIS).into(),
+                    i as u64 * per_thread_stagger_ms,
                 ));
             }
 
-            loop {
-                match target_test_clone(
-                    bytes_to_request,
-                    &total_downloaded_bytes_counter,
-                    &current_down_clone,
-                    &exit_signal_clone,
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
-                            println!("Error in download test thread {i}: {e:?}");
-                        }
-                        return;
+            match target_test_clone(
+                bytes_to_request,
+                &total_downloaded_bytes_counter,
+                &current_down_clone,
+                &exit_signal_clone,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    if !CTRL_C_PRESSED.load(Ordering::Relaxed) {
+                        eprintln!("Error in test thread {i}: {e:?}");
                     }
-                }
-
-                // exit if we have passed the deadline
-                if exit_signal_clone.load(Ordering::Relaxed) {
-                    // println!("Thread {} exiting...", i);
-                    return;
                 }
             }
         });
@@ -418,16 +472,25 @@ where
     thread_handles
 }
 
-fn run_download_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec<usize> {
+fn run_download_test(config: &UserArgs, results: Arc<Mutex<TestResults>>, quiet: bool) {
     let total_downloaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let exit_signal = Arc::new(AtomicBool::new(false));
-
-    exit_signal.store(false, Ordering::SeqCst);
     let current_down_speed = Arc::new(AtomicUsize::new(0));
-    let down_deadline = get_secs_since_unix_epoch()
-        + get_test_time(config.test_duration_seconds, config.download_threads);
+    let down_deadline = Instant::now()
+        + Duration::from_secs(get_test_time(
+            config.test_duration_seconds,
+            config.download_threads,
+        ));
 
-    let target_test = Arc::new(download_test);
+    let server = config.server.clone();
+    let cipher = config.cipher();
+    let target_test = Arc::new(
+        move |bytes: usize,
+              total: &Arc<AtomicUsize>,
+              speed: &Arc<AtomicUsize>,
+              exit: &Arc<AtomicBool>|
+              -> Result<()> { download_test(&server, cipher, bytes, total, speed, exit) },
+    );
     let down_handles = spawn_test_threads(
         config.download_threads,
         target_test,
@@ -443,21 +506,29 @@ fn run_download_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec
 
     // Calculate and print download speed
     loop {
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+
+        // exit if we have passed the deadline
+        if Instant::now() > down_deadline {
+            exit_signal.store(true, Ordering::SeqCst);
+            break;
+        }
+
         let bytes_down = total_downloaded_bytes_counter.load(Ordering::Relaxed);
-        let bytes_down_diff = bytes_down - last_bytes_down;
+        let bytes_down_diff = bytes_down.saturating_sub(last_bytes_down);
 
         // set current_down
         current_down_speed.store(bytes_down_diff, Ordering::SeqCst);
         down_measurements.push(bytes_down_diff);
 
         // Update shared results
-        if let Ok(mut shared_results) = results.try_lock() {
-            shared_results.down_measurements = down_measurements.clone();
-        }
+        results
+            .lock()
+            .expect("Results lock poisoned, please try re-running")
+            .down_measurements = down_measurements.clone();
 
-        let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
-        // only print progress if we are before deadline
-        if get_secs_since_unix_epoch() < down_deadline {
+        if !quiet {
+            let speed_values = get_appropriate_byte_unit(bytes_down_diff as u64);
             println!(
                 "Download: {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
                 16,
@@ -465,43 +536,45 @@ fn run_download_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec
                 byte_speed = speed_values.0,
                 bit_speed = speed_values.1
             );
+            io::stdout().flush().unwrap();
         }
-        io::stdout().flush().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(1000));
         last_bytes_down = bytes_down;
-
-        // exit if we have passed the deadline
-        if get_secs_since_unix_epoch() > down_deadline {
-            exit_signal.store(true, Ordering::SeqCst);
-            break;
-        }
     }
 
-    println!("Waiting for download threads to finish...");
+    if !quiet {
+        println!("Waiting for download threads to finish...");
+    }
     for handle in down_handles {
         handle.join().expect("Couldn't join download thread");
     }
 
     // Mark download as completed
     if let Ok(mut shared_results) = results.lock() {
-        shared_results.down_measurements = down_measurements.clone();
+        shared_results.down_measurements = down_measurements;
         shared_results.download_completed = true;
     }
-
-    down_measurements
 }
 
-fn run_upload_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec<usize> {
+fn run_upload_test(config: &UserArgs, results: Arc<Mutex<TestResults>>, quiet: bool) {
     let exit_signal = Arc::new(AtomicBool::new(false));
     let total_uploaded_bytes_counter = Arc::new(AtomicUsize::new(0));
     let current_up_speed = Arc::new(AtomicUsize::new(0));
-    // re-use exit_signal for upload tests
-    exit_signal.store(false, Ordering::SeqCst);
 
-    let up_deadline = get_secs_since_unix_epoch()
-        + get_test_time(config.test_duration_seconds, config.upload_threads);
+    let up_deadline = Instant::now()
+        + Duration::from_secs(get_test_time(
+            config.test_duration_seconds,
+            config.upload_threads,
+        ));
 
-    let target_test = Arc::new(upload_test);
+    let server = config.server.clone();
+    let cipher = config.cipher();
+    let target_test = Arc::new(
+        move |bytes: usize,
+              total: &Arc<AtomicUsize>,
+              speed: &Arc<AtomicUsize>,
+              exit: &Arc<AtomicBool>|
+              -> Result<()> { upload_test(&server, cipher, bytes, total, speed, exit) },
+    );
     let up_handles = spawn_test_threads(
         config.upload_threads,
         target_test,
@@ -517,50 +590,54 @@ fn run_upload_test(config: &UserArgs, results: Arc<Mutex<TestResults>>) -> Vec<u
 
     // Calculate and print upload speed
     loop {
-        let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
-
-        let bytes_up_diff = bytes_up - last_bytes_up;
-        up_measurements.push(bytes_up_diff);
-
-        // Update shared results
-        if let Ok(mut shared_results) = results.try_lock() {
-            shared_results.up_measurements = up_measurements.clone();
-        }
-
-        let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
-
-        println!(
-            "Upload:   {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
-            16,
-            16,
-            byte_speed = speed_values.0,
-            bit_speed = speed_values.1
-        );
-
-        io::stdout().flush().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        last_bytes_up = bytes_up;
 
         // exit if we have passed the deadline
-        if get_secs_since_unix_epoch() > up_deadline {
+        if Instant::now() > up_deadline {
             exit_signal.store(true, Ordering::SeqCst);
             break;
         }
+
+        let bytes_up = total_uploaded_bytes_counter.load(Ordering::Relaxed);
+
+        let bytes_up_diff = bytes_up.saturating_sub(last_bytes_up);
+        up_measurements.push(bytes_up_diff);
+
+        // Update shared results
+        results
+            .lock()
+            .expect("Results lock poisoned, please try re-running")
+            .up_measurements = up_measurements.clone();
+
+        if !quiet {
+            let speed_values = get_appropriate_byte_unit(bytes_up_diff as u64);
+
+            println!(
+                "Upload:   {bit_speed:>12.*}it/s       ({byte_speed:>10.*}/s)",
+                16,
+                16,
+                byte_speed = speed_values.0,
+                bit_speed = speed_values.1
+            );
+
+            io::stdout().flush().unwrap();
+        }
+        last_bytes_up = bytes_up;
     }
 
     // wait for upload threads to finish
-    println!("Waiting for upload threads to finish...");
+    if !quiet {
+        println!("Waiting for upload threads to finish...");
+    }
     for handle in up_handles {
         handle.join().expect("Couldn't join upload thread");
     }
 
     // Mark upload as completed
     if let Ok(mut shared_results) = results.lock() {
-        shared_results.up_measurements = up_measurements.clone();
+        shared_results.up_measurements = up_measurements;
         shared_results.upload_completed = true;
     }
-
-    up_measurements
 }
 
 fn compute_statistics(data: &mut [usize]) -> (f64, f64, usize, usize, usize, usize) {
@@ -627,9 +704,111 @@ fn print_results_table(results: &TestResults) {
     print!("\n{}\n{}\n", get_current_timestamp(), table);
 }
 
+fn build_speedtest_result(preamble: &PreambleData, results: &TestResults) -> SpeedtestResult {
+    let mut down = results.down_measurements.clone();
+    let mut up = results.up_measurements.clone();
+
+    let (down_median, down_avg, down_p90, _, _, _) = compute_statistics(&mut down);
+    let (up_median, up_avg, up_p90, _, _, _) = compute_statistics(&mut up);
+
+    SpeedtestResult {
+        timestamp: preamble.timestamp.clone(),
+        server_iata: preamble.server_iata.clone(),
+        server_city: preamble.server_city.clone(),
+        server_country: preamble.server_country.clone(),
+        user_country: preamble.user_country_full.clone(),
+        latency_ms: preamble.latency.as_secs_f64() * 1000.0,
+        jitter_ms: preamble.jitter.as_secs_f64() * 1000.0,
+        download_median_bps: down_median as u64,
+        download_avg_bps: down_avg as u64,
+        download_p90_bps: down_p90 as u64,
+        upload_median_bps: up_median as u64,
+        upload_avg_bps: up_avg as u64,
+        upload_p90_bps: up_p90 as u64,
+    }
+}
+
+fn print_json_results(r: &SpeedtestResult) {
+    println!(
+        r#"{{
+  "version": "cf_speedtest {}",
+  "timestamp": "{}",
+  "server_iata": "{}",
+  "server_city": "{}",
+  "server_country": "{}",
+  "user_country": "{}",
+  "latency_ms": {:.2},
+  "jitter_ms": {:.2},
+  "download_median_bps": {},
+  "download_avg_bps": {},
+  "download_p90_bps": {},
+  "download_median_mbps": {:.2},
+  "download_avg_mbps": {:.2},
+  "download_p90_mbps": {:.2},
+  "upload_median_bps": {},
+  "upload_avg_bps": {},
+  "upload_p90_bps": {},
+  "upload_median_mbps": {:.2},
+  "upload_avg_mbps": {:.2},
+  "upload_p90_mbps": {:.2}
+}}"#,
+        env!("CARGO_PKG_VERSION"),
+        r.timestamp,
+        r.server_iata,
+        r.server_city,
+        r.server_country,
+        r.user_country,
+        r.latency_ms,
+        r.jitter_ms,
+        r.download_median_bps,
+        r.download_avg_bps,
+        r.download_p90_bps,
+        SpeedtestResult::bps_to_mbps(r.download_median_bps),
+        SpeedtestResult::bps_to_mbps(r.download_avg_bps),
+        SpeedtestResult::bps_to_mbps(r.download_p90_bps),
+        r.upload_median_bps,
+        r.upload_avg_bps,
+        r.upload_p90_bps,
+        SpeedtestResult::bps_to_mbps(r.upload_median_bps),
+        SpeedtestResult::bps_to_mbps(r.upload_avg_bps),
+        SpeedtestResult::bps_to_mbps(r.upload_p90_bps),
+    );
+}
+
+fn print_csv_results(r: &SpeedtestResult, no_header: bool) {
+    if !no_header {
+        println!("version,timestamp,server_iata,server_city,server_country,user_country,latency_ms,jitter_ms,download_median_bps,download_avg_bps,download_p90_bps,download_median_mbps,download_avg_mbps,download_p90_mbps,upload_median_bps,upload_avg_bps,upload_p90_bps,upload_median_mbps,upload_avg_mbps,upload_p90_mbps");
+    }
+    println!(
+        "\"cf_speedtest {}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",{:.2},{:.2},{},{},{},{:.2},{:.2},{:.2},{},{},{},{:.2},{:.2},{:.2}",
+        env!("CARGO_PKG_VERSION"),
+        r.timestamp,
+        r.server_iata,
+        r.server_city,
+        r.server_country,
+        r.user_country,
+        r.latency_ms,
+        r.jitter_ms,
+        r.download_median_bps,
+        r.download_avg_bps,
+        r.download_p90_bps,
+        SpeedtestResult::bps_to_mbps(r.download_median_bps),
+        SpeedtestResult::bps_to_mbps(r.download_avg_bps),
+        SpeedtestResult::bps_to_mbps(r.download_p90_bps),
+        r.upload_median_bps,
+        r.upload_avg_bps,
+        r.upload_p90_bps,
+        SpeedtestResult::bps_to_mbps(r.upload_median_bps),
+        SpeedtestResult::bps_to_mbps(r.upload_avg_bps),
+        SpeedtestResult::bps_to_mbps(r.upload_p90_bps),
+    );
+}
+
 fn main() {
-    let config: UserArgs = argh::from_env();
+    let mut config: UserArgs = argh::from_env();
     config.validate().expect("Invalid arguments");
+
+    let quiet = config.format.is_some();
 
     let results = Arc::new(Mutex::new(TestResults::default()));
     let results_clone = Arc::clone(&results);
@@ -637,27 +816,49 @@ fn main() {
     // Set up CTRL-C handler
     ctrlc::set_handler(move || {
         CTRL_C_PRESSED.store(true, Ordering::Relaxed);
-        println!("\n\nReceived CTRL-C, printing current results...");
-        if let Ok(current_results) = results_clone.lock() {
-            print_results_table(&current_results);
+        if !quiet {
+            println!("\n\nReceived CTRL-C, printing current results...");
+            if let Ok(current_results) = results_clone.lock() {
+                print_results_table(&current_results);
+            }
         }
         std::process::exit(0);
     })
     .expect("Error setting CTRL-C handler");
 
-    print_test_preamble();
+    // Collect preamble data (meta info, latency, jitter)
+    let preamble = collect_preamble_data(&config.server, config.cipher());
+    if !quiet {
+        print_preamble(&preamble);
+    }
 
     if !config.upload_only {
-        run_download_test(&config, Arc::clone(&results));
+        run_download_test(&config, Arc::clone(&results), quiet);
     }
 
     if !config.download_only {
-        println!("Starting upload tests...");
-        run_upload_test(&config, Arc::clone(&results));
+        if !quiet {
+            println!("Starting upload tests...");
+        }
+        run_upload_test(&config, Arc::clone(&results), quiet);
     }
 
-    // Print final results
-    if let Ok(final_results) = results.lock() {
-        print_results_table(&final_results);
-    };
+    // Output final results
+    let final_results = results
+        .lock()
+        .expect("Results lock poisoned, please try re-running");
+
+    match config.format.as_deref() {
+        Some("json") => {
+            let result = build_speedtest_result(&preamble, &final_results);
+            print_json_results(&result);
+        }
+        Some("csv") => {
+            let result = build_speedtest_result(&preamble, &final_results);
+            print_csv_results(&result, config.no_header);
+        }
+        _ => {
+            print_results_table(&final_results);
+        }
+    }
 }
